@@ -16,7 +16,8 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
     UPSTREAM_BASE_URL   use any other OpenAI-compatible provider instead, e.g. https://openrouter.ai/api/v1
     UPSTREAM_API_KEY    key for that provider
     REAL_MODELS         comma separated model chain; ElevenLabs' model name is ignored
-    REASONING_EFFORT    Gemini only, default "low"; set to empty to leave it out
+    REASONING_EFFORT    Gemini models, default "low"
+    GEMMA_EFFORT        Gemma models, default "minimal" (the only value that stops its visible thinking)
     HEDGE_DELAY         seconds with no reply before also trying the next model (default 1.5)
     MAX_PARALLEL        most upstream requests in flight per turn (default 2)
     TOTAL_TIMEOUT       give up on a turn after this many seconds (default 7; ElevenLabs quits at ~8)
@@ -47,15 +48,17 @@ API_KEY = os.environ.get("UPSTREAM_API_KEY", "") if UPSTREAM_BASE else os.enviro
 
 # Models are tried in order. A model may be listed more than once: when an upstream is overloaded,
 # individual requests hang at random, so racing copies of one model helps (see docs/KNOWN_ISSUES.md).
-DEFAULT_CHAIN = "gemini-3.5-flash-lite"
+DEFAULT_CHAIN = "gemma-4-26b-a4b-it"
 MODELS = [m.strip() for m in os.environ.get("REAL_MODELS", DEFAULT_CHAIN).split(",") if m.strip()]
 REASONING_EFFORT = os.environ.get("REASONING_EFFORT", "low")
+GEMMA_EFFORT = os.environ.get("GEMMA_EFFORT", "minimal")
 HEDGE_DELAY = float(os.environ.get("HEDGE_DELAY", "1.5"))
 MAX_PARALLEL = max(1, int(os.environ.get("MAX_PARALLEL", "2")))
 TOTAL_TIMEOUT = float(os.environ.get("TOTAL_TIMEOUT", "7"))
 MOCK_LLM = _flag("MOCK_LLM")
 DEBUG_DUMP = _flag("DEBUG_DUMP")
 BUDGET = 8000  # token budget handed to the context manager
+RETRY_STATUS = (500, 502, 503, 504)  # upstream errors worth one quick retry of the same model
 
 # Only forward fields the upstream endpoint understands (ElevenLabs adds extras).
 FORWARD_FIELDS = ("messages", "temperature", "max_tokens", "tools", "tool_choice", "top_p")
@@ -162,8 +165,12 @@ async def _attempt(client: httpx.AsyncClient, model: str, payload: dict, headers
     or {"ok": False, status, err} on failure. Only raises on cancellation (and cleans up first)."""
     r = None
     try:
-        req = client.build_request("POST", f"{BASE}/chat/completions",
-                                   json={**payload, "model": model}, headers=headers)
+        body = {**payload, "model": model}
+        if model.startswith("gemma"):
+            # Gemma 4 thinks out loud by default (streams <thought>... as reply text, 5 to 14 s of delay).
+            # "minimal" is the only value it accepts that turns that off (none/low/budget return 400).
+            body["reasoning_effort"] = GEMMA_EFFORT
+        req = client.build_request("POST", f"{BASE}/chat/completions", json=body, headers=headers)
         r = await client.send(req, stream=True)
         if r.status_code != 200:
             err = (await r.aread()).decode(errors="replace")
@@ -222,8 +229,8 @@ async def race(client: httpx.AsyncClient, payload: dict, headers: dict, t0: floa
                         await _close(res["r"])
                     continue
                 print(f"   {m} failed: {res['status']} {res['err']}", flush=True)
-                if res["status"] == 503 and m not in retried:
-                    retried.add(m)  # overload spikes often clear fast: retry same model once
+                if res["status"] in RETRY_STATUS and m not in retried:
+                    retried.add(m)  # overload/internal errors often clear fast: retry same model once
                     queue.insert(0, m)
             while winner is None and queue and len(tasks) < MAX_PARALLEL:
                 launch()

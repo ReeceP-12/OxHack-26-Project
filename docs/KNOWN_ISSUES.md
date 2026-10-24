@@ -1,8 +1,24 @@
-# Known issues (Sat 24 Oct 2026, ~17:15)
+# Known issues (Sat 24 Oct 2026, updated ~18:35)
 
 Read this before debugging the proxy. Nothing here is a setup mistake on your side.
 
-## 1. Gemini is slow or hangs for Reece's key (open)
+## 0. Working setup found (read this first)
+
+The Gemini Flash models were overloaded or hanging for every key we tried. **`gemma-4-26b-a4b-it` on the same Gemini API key works**, with two catches:
+
+1. **Gemma 4 thinks out loud by default.** It streams `<thought>...` as reply text and can take 5 to 14 s before the real answer. The proxy now sends `reasoning_effort: "minimal"` to Gemma models, the only value that turns this off (`none`, `low` and `thinking_budget` all return 400). Override with `GEMMA_EFFORT`.
+2. **Individual requests still hang or return 500 at random.** The proxy races copies and retries 500, 502, 503 and 504 once. Recommended live settings:
+```
+set REAL_MODELS=gemma-4-26b-a4b-it,gemma-4-26b-a4b-it,gemma-4-26b-a4b-it
+set MAX_PARALLEL=3
+set HEDGE_DELAY=1.5
+uvicorn main:app --port 8000
+```
+Measured with `python tools/soak.py` (15 sequential requests, 6 s window): 15/15 answered, median 3.4 s, slowest 4.7 s (full replies). Re-run it to check the current state. Tools: `tools/test_gemini.py` (which models answer), `tools/probe_thinking.py` (how to switch thinking off), `tools/stream_probe.py` (raw chunk timings), `tools/soak.py` (success rate), `tools/replay.py`.
+
+The older notes below are still true for the Flash models.
+
+## 1. Gemini Flash models slow or hanging (workaround in section 0)
 
 **Symptom:** ElevenLabs shows `custom_llm_error: LLM Cascade Error: TimeoutError`, or a reply arrives after about 12 seconds ("8.0 s lost to failed LLM attempts").
 

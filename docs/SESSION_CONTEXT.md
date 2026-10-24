@@ -1,6 +1,6 @@
 # Session context: proxy and ElevenLabs wiring (Sat 24 Oct 2026, updated ~17:20)
 
-**Update 17:20:** the Gemini timeout is understood but not fixed: Google is overloaded or hanging for Reece's key. The proxy now retries, races models and has a `MOCK_LLM=1` mode so everyone can keep working. Context manager on/off switch added. Full details in `docs/KNOWN_ISSUES.md`. Sections below are the 14:20 snapshot where not contradicted.
+**Update 18:35:** workaround found: `gemma-4-26b-a4b-it` with `reasoning_effort=minimal` and racing (see section 0 of `docs/KNOWN_ISSUES.md`); soak test 15/15. **Update 17:20 (earlier):** the Gemini timeout is understood but not fixed: Google is overloaded or hanging for Reece's key. The proxy now retries, races models and has a `MOCK_LLM=1` mode so everyone can keep working. Context manager on/off switch added. Full details in `docs/KNOWN_ISSUES.md`. Sections below are the 14:20 snapshot where not contradicted.
 
 Read this alongside `CONTEXT.md` (the idea, architecture, prizes, timeline). This file is only what has happened since: what is built, what works, what is broken, and how it was set up. Keep it updated.
 
