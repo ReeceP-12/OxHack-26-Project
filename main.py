@@ -86,25 +86,42 @@ app = FastAPI(lifespan=lifespan)
 
 
 # ---- context hooks --------------------------------------------------------------------------
-def est_tokens(messages: list[dict]) -> int:
-    """Rough token estimate (4 chars per token). Swap for tiktoken if you need accuracy."""
-    total = 0
-    for m in messages:
-        c = m.get("content") or ""
-        if isinstance(c, list):  # content parts
-            c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
-        total += len(c) // 4 + 4
-    return total
+# def est_tokens(messages: list[dict]) -> int:
+#     """Rough token estimate (4 chars per token). Swap for tiktoken if you need accuracy."""
+#     total = 0
+#     for m in messages:
+#         c = m.get("content") or ""
+#         if isinstance(c, list):  # content parts
+#             c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
+#         total += len(c) // 4 + 4
+#     return total
 
+
+from memory.context_manager import ContextManager
+from memory.tiers import count_tokens
+from memory.scorer import text_of
+
+_cm = ContextManager()
+
+# warmup
+_cm.build([{"role": "user", "content": "warmup"}], 1500)
+
+
+def est_tokens(messages: list[dict]) -> int:
+    """Token count using the same tiktoken counter the context manager uses."""
+    return sum(count_tokens(text_of(m)) for m in messages)
 
 def manager_build(messages: list[dict], budget: int) -> list[dict]:
-    """PLACEHOLDER for ContextManager.build. Teammate A replaces this."""
-    return messages
+    kept, tiers = _cm.build(messages, 1500)
+    STATE["last_tiers"] = tiers
+    print(f"manager_build: budget={budget}, in={len(messages)}, kept={len(kept)}")
+    return kept
 
 
 def build_context(messages: list[dict], budget: int) -> list[dict]:
     if not STATE["manager_on"]:
-        return messages  # naive baseline: send everything untouched
+        STATE["last_tiers"] = []     # naive mode: no tiers, and no stale ones from earlier
+        return messages
     return manager_build(messages, budget)
 
 
@@ -337,6 +354,7 @@ async def chat_completions(request: Request):
     entry = {
         "turn": _turn_counter,
         "messages_in": len(original),
+        "tiers": STATE.get("last_tiers", []),
         "messages_sent": len(messages),
         "tokens_in": est_tokens(original),
         "tokens_sent": est_tokens(messages),

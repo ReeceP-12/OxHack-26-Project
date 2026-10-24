@@ -5,3 +5,4 @@ __pycache__/
 last_request.json
 *.bak*
 _to_delete/
+.DS_Store
