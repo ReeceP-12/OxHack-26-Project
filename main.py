@@ -21,7 +21,10 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
     HEDGE_DELAY         seconds with no reply before also trying the next model (default 1.5)
     MAX_PARALLEL        most upstream requests in flight per turn (default 2)
     TOTAL_TIMEOUT       give up on a turn after this many seconds (default 7; ElevenLabs quits at ~8)
-    STANDIN             1 = use the stand-in context manager (standin/standin.py); STANDIN_BUDGET sets its budget
+    MANAGER             which context manager runs when the switch is ON: "memory" (Teammate A's, memory/),
+                        "standin" (standin/standin.py), or unset = pass-through placeholder. STANDIN=1 still means standin.
+    MEMORY_BUDGET       token budget for A's manager (default 1500)
+    STANDIN_BUDGET      token budget for the stand-in (default 1500)
     CONTEXT_MANAGER     on/off at startup (default on). Flip live with /debug/mode/on|off
     MOCK_LLM            1 = never call a model
     DEBUG_DUMP          1 = save each request to last_request.json for replay.py
@@ -74,6 +77,8 @@ _turn_counter = 0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if _manager_name() == "memory":
+        _memory_cm()  # fail fast and warm up now, not on the first live turn
     # One shared client: connections (and TLS handshakes) are reused across turns.
     app.state.client = httpx.AsyncClient(
         timeout=httpx.Timeout(30, connect=5),
@@ -87,14 +92,21 @@ app = FastAPI(lifespan=lifespan)
 
 
 # ---- context hooks --------------------------------------------------------------------------
+try:  # accurate counts if tiktoken is installed (same counter A's manager uses), else 4 chars per token
+    import tiktoken
+    _ENC = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _ENC = None
+
+
 def est_tokens(messages: list[dict]) -> int:
-    """Rough token estimate (4 chars per token). Swap for tiktoken if you need accuracy."""
+    """Token estimate: tiktoken when available, otherwise 4 chars per token."""
     total = 0
     for m in messages:
         c = m.get("content") or ""
         if isinstance(c, list):  # content parts
             c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
-        total += len(c) // 4 + 4
+        total += (len(_ENC.encode(c)) if _ENC else len(c) // 4) + 4
     return total
 
 
@@ -108,19 +120,40 @@ def full_tiers(messages: list[dict]) -> list[dict]:
             for i, m in enumerate(messages)]
 
 
-def manager_build(messages: list[dict], budget: int):
-    """PLACEHOLDER for ContextManager.build. Teammate A replaces this.
+_MEMORY_CM = None
 
-    Contract: return (messages, tiers).
+
+def _manager_name() -> str:
+    name = os.environ.get("MANAGER", "").strip().lower()
+    if not name and _flag("STANDIN"):
+        name = "standin"
+    return name
+
+
+def _memory_cm():
+    """Teammate A's ContextManager, imported lazily so the proxy still starts without memory/."""
+    global _MEMORY_CM
+    if _MEMORY_CM is None:
+        from memory.context_manager import ContextManager
+        _MEMORY_CM = ContextManager()
+        _MEMORY_CM.build([{"role": "user", "content": "warmup"}], 1500)  # load models before the first real turn
+    return _MEMORY_CM
+
+
+def manager_build(messages: list[dict], budget: int):
+    """Context manager hook. Returns (messages, tiers).
+
       messages: the reduced OpenAI-style list to send to the model.
       tiers: one entry per ORIGINAL message (index into the incoming list):
              {"index": 4, "role": "user", "tier": "full|summary|gist|archived", "score": 0.73, "tokens": 41}
              "tokens" is the cost of that message as it appears in the sent prompt (0 if archived).
     Returning just a list is still accepted (everything is then reported as full).
 
-    STANDIN=1 switches on Reece's stand-in manager (standin/standin.py) until A's real one lands.
-    STANDIN_BUDGET (default 1500) is its token budget; kept small so the effect shows on a 50 turn chat."""
-    if _flag("STANDIN"):
+    Choose the manager with MANAGER=memory|standin (unset = pass-through)."""
+    name = _manager_name()
+    if name == "memory":
+        return _memory_cm().build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
+    if name == "standin":
         from standin.standin import build as standin_build
         return standin_build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
     return messages, full_tiers(messages)
