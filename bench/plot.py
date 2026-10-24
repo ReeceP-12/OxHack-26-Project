@@ -22,7 +22,15 @@ def load(label):
         print(f"missing {path}, skipping {label}")
         return None
     with open(path) as f:
-        return json.load(f)["turns"]
+        turns = json.load(f)["turns"]
+    # A call Gemini refused (and the runner retried) is logged by the proxy without timings.
+    # Drop those records: the successful retry is the real turn, and keeping both would
+    # count the same turn's tokens twice.
+    good = [t for t in turns if t.get("ttft_ms") is not None and t.get("total_ms") is not None]
+    if len(good) != len(turns):
+        print(f"{label}: ignored {len(turns) - len(good)} refused/failed call records "
+              f"({len(good)} turns kept)")
+    return good
 
 def col(turns, key):
     return [t[key] for t in turns]
@@ -32,9 +40,16 @@ def summary(name, turns):
     ttft = sorted(col(turns, "ttft_ms"))
     total = sorted(col(turns, "total_ms"))
     p50 = lambda xs: xs[len(xs) // 2]
+    mgr = [t["manager_ms"] for t in turns if t.get("manager_ms") is not None]
+    mean = lambda xs: sum(xs) / len(xs)
+    extra = ""
+    if mgr:
+        mgr = sorted(mgr)
+        extra = (f"  manager_ms median={p50(mgr):.1f} max={mgr[-1]:.1f}"
+                 f"  (ttft+manager mean={mean(col(turns, 'ttft_ms')) + mean(mgr):.0f}ms)")
     print(f"{name:6s} turns={len(turns)}  tokens_sent total={sum(ts)}  "
           f"(tokens_in total={sum(ti)})  last-turn sent={ts[-1]}  "
-          f"ttft median={p50(ttft)}ms  total median={p50(total)}ms")
+          f"ttft median={p50(ttft)}ms mean={mean(ttft):.0f}ms  total median={p50(total)}ms" + extra)
 
 def main():
     ap = argparse.ArgumentParser()
@@ -103,7 +118,22 @@ def main():
     plt.tight_layout()
     plt.savefig("bench/latency_per_turn.png", dpi=150)
     plt.close()
-    print("wrote bench/tokens_per_turn.png, bench/tokens_cumulative.png and bench/latency_per_turn.png")
+    # Chart 4: the memory manager's own cost per turn (ttft does not include it)
+    if any(t.get("manager_ms") is not None for v in runs.values() for t in v):
+        plt.figure(figsize=(9, 5))
+        for name, turns in runs.items():
+            plt.plot(range(len(turns)), [t.get("manager_ms") or 0 for t in turns],
+                     label=name, color=colours[name], linewidth=2)
+        plt.xlabel("Turn")
+        plt.ylabel("Memory manager time (ms)")
+        plt.title("Cost of the memory manager per turn")
+        plt.grid(alpha=0.3)
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig("bench/manager_ms_per_turn.png", dpi=150)
+        plt.close()
+    print("wrote bench/tokens_per_turn.png, bench/tokens_cumulative.png, bench/latency_per_turn.png "
+          "(and bench/manager_ms_per_turn.png when manager_ms exists)")
 
 if __name__ == "__main__":
     main()

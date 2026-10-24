@@ -37,6 +37,19 @@ def chat(url, model, messages, timeout=60):
     prompt_tokens = (data.get("usage") or {}).get("prompt_tokens", -1)
     return reply, latency, prompt_tokens, None
 
+def chat_retry(url, model, messages, retries, wait):
+    """Like chat(), but a failed call is tried again up to `retries` more times after
+    `wait` seconds (Gemini sometimes refuses a call for a moment: busy or a per-minute limit).
+    Returns (reply, latency, prompt_tokens, error, retries_used). Latency is the last attempt only."""
+    used = 0
+    while True:
+        reply, lat, ptok, err = chat(url, model, messages)
+        if not err or used >= retries:
+            return reply, lat, ptok, err, used
+        used += 1
+        print(f"        retry {used}/{retries} in {wait:.0f}s after: {err[:60]}")
+        time.sleep(wait)
+
 # Sent as the first message of EVERY request, in every mode, so the comparison stays fair.
 # Without it the model drifted into a shouting persona when its history was cut down.
 # Pass --system "" to turn it off. Whoever writes manager_build() must keep this message.
@@ -75,6 +88,10 @@ def main():
     ap.add_argument("--model", default="gemini-flash")
     ap.add_argument("--system", default=SYSTEM_DEFAULT,
                     help='system message sent with every request ("" to disable)')
+    ap.add_argument("--retries", type=int, default=3,
+                    help="extra attempts for a call that fails (0 = never retry)")
+    ap.add_argument("--retry-wait", type=float, default=8.0,
+                    help="seconds to wait before each retry")
     ap.add_argument("--window", type=int, default=0,
                     help="send only the last N messages each turn (0 = send everything)")
     a = ap.parse_args()
@@ -86,10 +103,12 @@ def main():
     requests.post(a.base + "/debug/reset", timeout=10).raise_for_status()
     print(f"mode={a.mode}, window={a.window or 'all'}, system prompt={'on' if a.system else 'off'}, log reset")
 
-    history, rows, failed_turns, shouts = [], [], 0, 0
+    history, rows, failed_turns, shouts, total_retries = [], [], 0, 0, 0
     for i, text in enumerate(build_turns()):
         history.append({"role": "user", "content": text})
-        reply, lat, ptok, err = chat(url, a.model, prep(history, a.window, a.system))
+        reply, lat, ptok, err, used = chat_retry(url, a.model, prep(history, a.window, a.system),
+                                                 a.retries, a.retry_wait)
+        total_retries += used
         if err:
             history.pop()  # failed turn: drop the user message, keep history consistent
             failed_turns += 1
@@ -117,7 +136,10 @@ def main():
 
     score, errors, hedges, answers = 0, 0, 0, []
     for q, kws in RECALL:
-        reply, _, _, err = chat(url, a.model, prep(history + [{"role": "user", "content": q}], a.window, a.system))
+        reply, _, _, err, used = chat_retry(url, a.model,
+                                            prep(history + [{"role": "user", "content": q}], a.window, a.system),
+                                            a.retries, a.retry_wait)
+        total_retries += used
         if err:
             errors += 1
             print(f"[ERROR] {q} -> {err}")
@@ -129,7 +151,10 @@ def main():
         tag = "OK" if ok else ("MISS (hedged: keyword present but reply refused)" if hedged else "MISS")
         print(f"[{tag}] {q} -> {reply[:80]!r}")
     print(f"\nRECALL {a.label}: {score}/{len(RECALL)}"
-          f"  (failed turns: {failed_turns}, errored recall questions: {errors}, hedged replies: {hedges}, shouting replies: {shouts})")
+          f"  (failed turns: {failed_turns}, errored recall questions: {errors}, hedged replies: {hedges}, shouting replies: {shouts}, retries used: {total_retries})")
+    if total_retries:
+        print(f"NOTE: {total_retries} calls were retried (Gemini refused them the first time). "
+              "Report this number next to the results.")
     if failed_turns or errors:
         print("WARNING: this run had errors. Do not use it for the final numbers.")
     if shouts:
