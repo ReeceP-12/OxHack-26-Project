@@ -3,6 +3,10 @@
 Usage (from repo root, proxy running on :8000):
   python -m bench.runner --mode off --label naive
   python -m bench.runner --mode on  --label ours
+  python -m bench.runner --mode off --label window20 --window 20
+The last one is a crude "forget old messages" baseline: it sends only the last N
+messages each turn (N=0 means send everything). It needs no proxy support, and it
+shows the benchmark can detect forgetting. Compare it with: python -m bench.plot --ours window20
 The runner flips the proxy's switch (POST /debug/mode), resets the turn log
 (POST /debug/reset), always sends the FULL history, then saves /debug/state.
 
@@ -33,6 +37,10 @@ def chat(url, model, messages, timeout=60):
     prompt_tokens = (data.get("usage") or {}).get("prompt_tokens", -1)
     return reply, latency, prompt_tokens, None
 
+def last_n(messages, n):
+    """The last n messages, or all of them when n is 0."""
+    return messages[-n:] if n else messages
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--base", default="http://localhost:8000")
@@ -40,6 +48,8 @@ def main():
                     help="on = context manager, off = naive")
     ap.add_argument("--label", required=True)
     ap.add_argument("--model", default="gemini-flash")
+    ap.add_argument("--window", type=int, default=0,
+                    help="send only the last N messages each turn (0 = send everything)")
     a = ap.parse_args()
     url = a.base + "/v1/chat/completions"
 
@@ -47,12 +57,12 @@ def main():
     r = requests.post(a.base + "/debug/mode", json={"manager_on": a.mode == "on"}, timeout=10)
     r.raise_for_status()
     requests.post(a.base + "/debug/reset", timeout=10).raise_for_status()
-    print(f"mode={a.mode}, log reset")
+    print(f"mode={a.mode}, window={a.window or 'all'}, log reset")
 
     history, rows, failed_turns = [], [], 0
     for i, text in enumerate(build_turns()):
         history.append({"role": "user", "content": text})
-        reply, lat, ptok, err = chat(url, a.model, history)
+        reply, lat, ptok, err = chat(url, a.model, last_n(history, a.window))
         if err:
             history.pop()  # failed turn: drop the user message, keep history consistent
             failed_turns += 1
@@ -60,7 +70,7 @@ def main():
         else:
             history.append({"role": "assistant", "content": reply})
             print(f"turn {i:2d}  {lat:5.2f}s  prompt_tokens={ptok}")
-        rows.append({"label": a.label, "mode": a.mode, "turn": i,
+        rows.append({"label": a.label, "mode": a.mode, "window": a.window, "turn": i,
                      "latency_s": round(lat, 3), "prompt_tokens": ptok,
                      "failed": int(bool(err))})
 
@@ -74,7 +84,7 @@ def main():
 
     score, errors = 0, 0
     for q, kws in RECALL:
-        reply, _, _, err = chat(url, a.model, history + [{"role": "user", "content": q}])
+        reply, _, _, err = chat(url, a.model, last_n(history + [{"role": "user", "content": q}], a.window))
         if err:
             errors += 1
             print(f"[ERROR] {q} -> {err}")
