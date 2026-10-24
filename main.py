@@ -21,6 +21,7 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
     HEDGE_DELAY         seconds with no reply before also trying the next model (default 1.5)
     MAX_PARALLEL        most upstream requests in flight per turn (default 2)
     TOTAL_TIMEOUT       give up on a turn after this many seconds (default 7; ElevenLabs quits at ~8)
+    STANDIN             1 = use the stand-in context manager (standin/standin.py); STANDIN_BUDGET sets its budget
     CONTEXT_MANAGER     on/off at startup (default on). Flip live with /debug/mode/on|off
     MOCK_LLM            1 = never call a model
     DEBUG_DUMP          1 = save each request to last_request.json for replay.py
@@ -115,7 +116,13 @@ def manager_build(messages: list[dict], budget: int):
       tiers: one entry per ORIGINAL message (index into the incoming list):
              {"index": 4, "role": "user", "tier": "full|summary|gist|archived", "score": 0.73, "tokens": 41}
              "tokens" is the cost of that message as it appears in the sent prompt (0 if archived).
-    Returning just a list is still accepted (everything is then reported as full)."""
+    Returning just a list is still accepted (everything is then reported as full).
+
+    STANDIN=1 switches on Reece's stand-in manager (standin/standin.py) until A's real one lands.
+    STANDIN_BUDGET (default 1500) is its token budget; kept small so the effect shows on a 50 turn chat."""
+    if _flag("STANDIN"):
+        from standin.standin import build as standin_build
+        return standin_build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
     return messages, full_tiers(messages)
 
 
