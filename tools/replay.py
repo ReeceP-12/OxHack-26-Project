@@ -1,6 +1,6 @@
 """Replays the last request the proxy saw straight at Gemini, no proxy, and times it.
 Needs the proxy to have run with  set DEBUG_DUMP=1  so last_request.json exists.
-Usage (key set in this window): python replay.py [model]"""
+Usage (key set in this window): python tools/replay.py [model]"""
 import os, sys, json, time, httpx
 
 URL = "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions"

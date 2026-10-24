@@ -13,13 +13,20 @@ Read this before debugging the proxy. Nothing here is a setup mistake on your si
 - ElevenLabs gives up on an attempt after about 8 seconds and retries, so the first token must arrive within that.
 - Groq and Cerebras signups were blocked (Cerebras wanted a card), and OpenRouter showed "Unable to verify" from Reece's network.
 
-**What the proxy does about it:** retries a 503 once, starts a second request after 1.5 s of silence, runs up to 3 requests in flight, takes whichever answers first, and gives up cleanly at 7 s. Tune with `HEDGE_DELAY`, `MAX_PARALLEL`, `TOTAL_TIMEOUT`.
+**Settings for flaky periods.** The defaults are one model, up to 2 requests in flight. When an upstream is this overloaded, race several copies of the one model that works:
+```
+set REAL_MODELS=gemini-3.5-flash-lite,gemini-3.5-flash-lite,gemini-3.5-flash-lite
+set MAX_PARALLEL=3
+uvicorn main:app --port 8000
+```
+
+**What the proxy does about it:** retries a 503 once, starts a second request after 1.5 s of silence, runs up to `MAX_PARALLEL` requests in flight, takes whichever answers first, and gives up cleanly at 7 s. Tune with `HEDGE_DELAY`, `MAX_PARALLEL`, `TOTAL_TIMEOUT`.
 
 **What you can do:**
 - Use your own Gemini key (see the teammate guide). If it answers quickly, you are fine.
 - No working key, or Gemini is slow for you too? Run the proxy with `MOCK_LLM=1`. See below.
 - To try another provider: `UPSTREAM_BASE_URL`, `UPSTREAM_API_KEY`, `REAL_MODELS` (any OpenAI-compatible endpoint, for example OpenRouter).
-- To test whether Gemini is healthy right now: `python test_gemini.py` (about 30 seconds).
+- To test whether Gemini is healthy right now: `python tools/test_gemini.py` (about 30 seconds).
 
 ## 2. Mock mode (use it while real models are flaky)
 
@@ -45,6 +52,9 @@ The proxy never calls a model. It streams a canned reply such as "Mock reply. I 
 
 ## 4. Benchmark note
 
+The proxy answers requests without `"stream": true` with a normal OpenAI JSON reply (text and `usage.prompt_tokens`), so the bench runner works unchanged. ElevenLabs streams.
+
+
 When benchmarking naive against ours, pin one model and one request at a time so both runs are comparable:
 `set REAL_MODELS=gemini-3.5-flash-lite` and `set MAX_PARALLEL=1`. Hedging can otherwise make different turns use different models. Also raise `TOTAL_TIMEOUT` (for example 30) for scripted runs, since the 7 s default is tuned for the live ElevenLabs demo.
 
@@ -52,4 +62,4 @@ When benchmarking naive against ours, pin one model and one request at a time so
 
 - `requirements.txtpip` in the repo is a stray typo file. Delete it.
 - The proxy has no secret check yet. Do not share the ngrok URL widely.
-- Set `DEBUG_DUMP=1` to save each request to `last_request.json` (git-ignored) for `replay.py`.
+- Set `DEBUG_DUMP=1` to save each request to `last_request.json` (git-ignored) for `tools/replay.py`. Diagnostic scripts live in `tools/`.
