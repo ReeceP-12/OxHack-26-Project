@@ -7,9 +7,11 @@ PLANTED = {
     7: "My dog is called Biscuit and he's a three year old beagle.",
     11: "My budget for the trip is 1200 pounds in total.",
     15: "My flight is BA 249 and it leaves at 6:40am.",
+    30: "Update on my deadline: it has moved from Friday to Monday the 17th, so please use Monday from now on.",
+    40: "Just confirming, my flight is still BA 249 and it still leaves at 6:40am.",
 }
 
-# 45 distinct filler lines (50 turns minus 5 planted), so nothing repeats.
+# Distinct filler lines (50 turns minus the planted ones), so nothing repeats.
 CHATTER = [
     "What's a good way to learn guitar chords quickly?",
     "Tell me something interesting about octopuses.",
@@ -73,10 +75,13 @@ def build_turns():
     return turns
 
 # (question, keywords: ANY of these in the reply counts as correct)
+# Note: keywords are checked against the reply text only. A reply that mentions both the
+# old and the new deadline ("moved from Friday to Monday") still passes on "monday".
 RECALL = [
     ("What am I allergic to?", ["peanut"]),
-    ("What deadline did I give you?", ["friday", "14"]),
+    # The deadline was CHANGED at turn 30, so the correct answer is the NEW one (Monday).
+    ("What is my current deadline?", ["monday"]),
     ("What's my dog's name?", ["biscuit"]),
     ("What's my total trip budget?", ["1200", "1,200"]),
-    ("What is my flight number?", ["ba 249", "ba249", "249"]),
+    ("What is my flight number?", ["ba 249", "ba249", "ba-249"]),
 ]

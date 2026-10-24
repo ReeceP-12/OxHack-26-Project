@@ -9,7 +9,7 @@ and each turn has tokens_in, tokens_sent, ttft_ms, total_ms, model.
 The proxy's global "turn" counter keeps running between runs, so we use each
 record's POSITION in the list as the turn number.
 
-Writes bench/tokens_per_turn.png and bench/latency_per_turn.png.
+Writes bench/tokens_per_turn.png, bench/tokens_cumulative.png and bench/latency_per_turn.png.
 """
 import argparse, json, os
 import matplotlib
@@ -72,7 +72,25 @@ def main():
     plt.savefig("bench/tokens_per_turn.png", dpi=150)
     plt.close()
 
-    # Chart 2: time to first token (the number that matters for voice), per turn
+    # Chart 2: cumulative tokens sent (running total). This is the "area under" chart 1,
+    # and it is where a saving becomes obvious: naive curves up, a flat manager is a straight line.
+    plt.figure(figsize=(9, 5))
+    for name, turns in runs.items():
+        total, running = 0, []
+        for t in turns:
+            total += t["tokens_sent"]
+            running.append(total)
+        plt.plot(range(len(turns)), running, label=name, color=colours[name], linewidth=2)
+    plt.xlabel("Turn")
+    plt.ylabel("Total tokens sent so far")
+    plt.title("Cumulative tokens over the conversation: naive vs ours")
+    plt.grid(alpha=0.3)
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("bench/tokens_cumulative.png", dpi=150)
+    plt.close()
+
+    # Chart 3: time to first token (the number that matters for voice), per turn
     plt.figure(figsize=(9, 5))
     for name, turns in runs.items():
         plt.plot(range(len(turns)), col(turns, "ttft_ms"),
@@ -85,7 +103,7 @@ def main():
     plt.tight_layout()
     plt.savefig("bench/latency_per_turn.png", dpi=150)
     plt.close()
-    print("wrote bench/tokens_per_turn.png and bench/latency_per_turn.png")
+    print("wrote bench/tokens_per_turn.png, bench/tokens_cumulative.png and bench/latency_per_turn.png")
 
 if __name__ == "__main__":
     main()
