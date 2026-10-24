@@ -379,7 +379,9 @@ async def chat_completions(request: Request):
     global _turn_counter
     body = await request.json()
     original = body.get("messages", [])
+    t_mgr = time.perf_counter()
     messages, tiers = build_context(original, budget=BUDGET)
+    manager_ms = round((time.perf_counter() - t_mgr) * 1000, 2)  # what the memory manager itself costs
 
     payload = {k: body[k] for k in FORWARD_FIELDS if k in body}
     payload["messages"] = messages
@@ -403,6 +405,7 @@ async def chat_completions(request: Request):
         "tokens_sent": est_tokens(messages),
         "manager_on": STATE["manager_on"],
         "tiers": tiers,
+        "manager_ms": manager_ms,
         "ttft_ms": None,
         "total_ms": None,
     }
