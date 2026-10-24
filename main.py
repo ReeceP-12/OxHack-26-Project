@@ -97,15 +97,36 @@ def est_tokens(messages: list[dict]) -> int:
     return total
 
 
-def manager_build(messages: list[dict], budget: int) -> list[dict]:
-    """PLACEHOLDER for ContextManager.build. Teammate A replaces this."""
-    return messages
+def _msg_tokens(m: dict) -> int:
+    return est_tokens([m])
 
 
-def build_context(messages: list[dict], budget: int) -> list[dict]:
+def full_tiers(messages: list[dict]) -> list[dict]:
+    """Tier info when nothing is shrunk: every message is kept in full."""
+    return [{"index": i, "role": m.get("role", ""), "tier": "full", "score": 1.0, "tokens": _msg_tokens(m)}
+            for i, m in enumerate(messages)]
+
+
+def manager_build(messages: list[dict], budget: int):
+    """PLACEHOLDER for ContextManager.build. Teammate A replaces this.
+
+    Contract: return (messages, tiers).
+      messages: the reduced OpenAI-style list to send to the model.
+      tiers: one entry per ORIGINAL message (index into the incoming list):
+             {"index": 4, "role": "user", "tier": "full|summary|gist|archived", "score": 0.73, "tokens": 41}
+             "tokens" is the cost of that message as it appears in the sent prompt (0 if archived).
+    Returning just a list is still accepted (everything is then reported as full)."""
+    return messages, full_tiers(messages)
+
+
+def build_context(messages: list[dict], budget: int) -> tuple[list[dict], list[dict]]:
     if not STATE["manager_on"]:
-        return messages  # naive baseline: send everything untouched
-    return manager_build(messages, budget)
+        return messages, full_tiers(messages)  # naive baseline: send everything untouched
+    out = manager_build(messages, budget)
+    if isinstance(out, tuple):
+        sent, tiers = out
+        return sent, tiers
+    return out, full_tiers(messages)  # old-style manager that returns a bare list
 
 
 # ---- debug endpoints ------------------------------------------------------------------------
@@ -277,7 +298,7 @@ async def _real_stream(client, payload: dict, headers: dict, entry: dict, t0: fl
     finally:
         await _close(winner["r"])
     entry["total_ms"] = round((time.perf_counter() - t0) * 1000)
-    print(entry, flush=True)
+    print({k: v for k, v in entry.items() if k != "tiers"}, flush=True)
 
 
 async def _collect_json(gen, entry: dict, model_hint: str):
@@ -318,7 +339,7 @@ async def chat_completions(request: Request):
     global _turn_counter
     body = await request.json()
     original = body.get("messages", [])
-    messages = build_context(original, budget=BUDGET)
+    messages, tiers = build_context(original, budget=BUDGET)
 
     payload = {k: body[k] for k in FORWARD_FIELDS if k in body}
     payload["messages"] = messages
@@ -341,6 +362,7 @@ async def chat_completions(request: Request):
         "tokens_in": est_tokens(original),
         "tokens_sent": est_tokens(messages),
         "manager_on": STATE["manager_on"],
+        "tiers": tiers,
         "ttft_ms": None,
         "total_ms": None,
     }
