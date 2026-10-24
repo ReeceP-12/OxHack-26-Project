@@ -9,7 +9,7 @@ PLANTED = {
     15: "My flight is BA 249 and it leaves at 6:40am.",
 }
 
-# Chatter that should be safe to shrink or forget
+# 45 distinct filler lines (50 turns minus 5 planted), so nothing repeats.
 CHATTER = [
     "What's a good way to learn guitar chords quickly?",
     "Tell me something interesting about octopuses.",
@@ -26,9 +26,40 @@ CHATTER = [
     "How do bees make honey?",
     "Suggest a short stretching routine.",
     "Why is the sky blue?",
+    "What's the tallest mountain in Europe?",
+    "How do vaccines train the immune system?",
+    "Recommend a board game for four people.",
+    "What causes the northern lights?",
+    "How long does it take to learn to juggle?",
+    "Why do cats purr?",
+    "Give me a quick tip for better sleep.",
+    "What's the origin of the word salary?",
+    "How does a refrigerator keep things cold?",
+    "Tell me about the history of the bicycle.",
+    "What's the best way to remember names?",
+    "How do airplanes stay in the air?",
+    "What's the deepest part of the ocean?",
+    "Suggest a hobby I can start with no equipment.",
+    "How do I stop my glasses fogging up?",
+    "What's the difference between weather and climate?",
+    "Why do onions make people cry?",
+    "Explain what an eclipse is.",
+    "How do I get better at mental arithmetic?",
+    "What's a good way to spend a rainy Sunday?",
+    "How do whales communicate?",
+    "Tell me a fun fact about volcanoes.",
+    "What makes a good cup of tea?",
+    "How does a compass work?",
+    "Why is the ocean salty?",
+    "Suggest a simple pasta sauce idea.",
+    "How do birds know where to migrate?",
+    "What's the story behind the Eiffel Tower?",
+    "How do I keep a houseplant alive?",
+    "What's the speed of sound?",
 ]
 
 N_TURNS = 50
+assert len(CHATTER) >= N_TURNS - len(PLANTED), "need more distinct filler lines"
 
 def build_turns():
     turns = []
@@ -37,7 +68,7 @@ def build_turns():
         if i in PLANTED:
             turns.append(PLANTED[i])
         else:
-            turns.append(CHATTER[c % len(CHATTER)])
+            turns.append(CHATTER[c])
             c += 1
     return turns
 

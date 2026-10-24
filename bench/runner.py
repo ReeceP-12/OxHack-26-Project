@@ -5,19 +5,33 @@ Usage (from repo root, proxy running on :8000):
   python -m bench.runner --mode on  --label ours
 The runner flips the proxy's switch (POST /debug/mode), resets the turn log
 (POST /debug/reset), always sends the FULL history, then saves /debug/state.
+
+An error reply (HTTP error, timeout, or an error body such as a Gemini 503)
+counts as a FAILED turn, not a reply: it is logged with failed=1, its user
+message is dropped from the history, and it never counts as a recall answer.
 """
 import argparse, csv, json, time, requests
 from bench.conversation import build_turns, RECALL
 
-def chat(url, model, messages):
+def chat(url, model, messages, timeout=60):
+    """Returns (reply, latency, prompt_tokens, error). error is None on success."""
     t0 = time.perf_counter()
-    r = requests.post(url, json={"model": model, "messages": messages}, timeout=60)
-    r.raise_for_status()
+    try:
+        r = requests.post(url, json={"model": model, "messages": messages}, timeout=timeout)
+    except requests.RequestException as e:
+        return None, time.perf_counter() - t0, -1, f"request failed: {e}"
     latency = time.perf_counter() - t0
-    data = r.json()
-    reply = data["choices"][0]["message"]["content"]
+    if r.status_code != 200:
+        return None, latency, -1, f"HTTP {r.status_code}: {r.text[:100]}"
+    try:
+        data = r.json()
+        if "error" in data or not data.get("choices"):
+            return None, latency, -1, f"error body: {str(data)[:100]}"
+        reply = data["choices"][0]["message"]["content"]
+    except (ValueError, KeyError, TypeError) as e:
+        return None, latency, -1, f"bad response: {e}"
     prompt_tokens = (data.get("usage") or {}).get("prompt_tokens", -1)
-    return reply, latency, prompt_tokens
+    return reply, latency, prompt_tokens, None
 
 def main():
     ap = argparse.ArgumentParser()
@@ -35,14 +49,20 @@ def main():
     requests.post(a.base + "/debug/reset", timeout=10).raise_for_status()
     print(f"mode={a.mode}, log reset")
 
-    history, rows = [], []
+    history, rows, failed_turns = [], [], 0
     for i, text in enumerate(build_turns()):
         history.append({"role": "user", "content": text})
-        reply, lat, ptok = chat(url, a.model, history)
-        history.append({"role": "assistant", "content": reply})
+        reply, lat, ptok, err = chat(url, a.model, history)
+        if err:
+            history.pop()  # failed turn: drop the user message, keep history consistent
+            failed_turns += 1
+            print(f"turn {i:2d}  FAILED  {err}")
+        else:
+            history.append({"role": "assistant", "content": reply})
+            print(f"turn {i:2d}  {lat:5.2f}s  prompt_tokens={ptok}")
         rows.append({"label": a.label, "mode": a.mode, "turn": i,
-                     "latency_s": round(lat, 3), "prompt_tokens": ptok})
-        print(f"turn {i:2d}  {lat:5.2f}s  prompt_tokens={ptok}")
+                     "latency_s": round(lat, 3), "prompt_tokens": ptok,
+                     "failed": int(bool(err))})
 
     # save the tier map / turn records before recall questions add extra turns
     try:
@@ -52,13 +72,20 @@ def main():
     except Exception as e:
         print("could not save /debug/state:", e)
 
-    score = 0
+    score, errors = 0, 0
     for q, kws in RECALL:
-        reply, _, _ = chat(url, a.model, history + [{"role": "user", "content": q}])
+        reply, _, _, err = chat(url, a.model, history + [{"role": "user", "content": q}])
+        if err:
+            errors += 1
+            print(f"[ERROR] {q} -> {err}")
+            continue
         ok = any(k in reply.lower() for k in kws)
         score += ok
         print(f"[{'OK' if ok else 'MISS'}] {q} -> {reply[:80]!r}")
-    print(f"\nRECALL {a.label}: {score}/{len(RECALL)}")
+    print(f"\nRECALL {a.label}: {score}/{len(RECALL)}"
+          f"  (failed turns: {failed_turns}, errored recall questions: {errors})")
+    if failed_turns or errors:
+        print("WARNING: this run had errors. Do not use it for the final numbers.")
 
     with open(f"bench/results_{a.label}.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=rows[0].keys())
