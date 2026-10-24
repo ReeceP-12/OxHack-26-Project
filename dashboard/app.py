@@ -1,0 +1,130 @@
+"""Live dashboard for the voice memory proxy.
+
+Run (from the repo root, venv active, proxy running on port 8000):
+    streamlit run dashboard/app.py
+
+No proxy yet? Tick "Use fake data" in the sidebar. "Simulate a live conversation" adds one fake turn
+per refresh so you can rehearse the demo.
+"""
+import pandas as pd
+import requests
+import streamlit as st
+
+from dash_data import (TIER_COLOURS, TIER_MEANING, TIERS, legend_html, make_fake_turns,
+                  tier_counts, tier_map_html)
+
+st.set_page_config(page_title="Voice memory dashboard", layout="wide")
+
+# ---- sidebar --------------------------------------------------------------------------------
+st.sidebar.header("Settings")
+base_url = st.sidebar.text_input("Proxy URL", "http://localhost:8000")
+refresh = st.sidebar.slider("Refresh every (seconds)", 1, 10, 2)
+auto = st.sidebar.checkbox("Auto refresh", value=True)
+use_fake = st.sidebar.checkbox("Use fake data", value=False)
+simulate = st.sidebar.checkbox("Simulate a live conversation (fake data only)", value=True)
+
+st.title("What the memory kept, shrank and forgot")
+st.caption("Each turn the voice agent resends the whole conversation. The manager decides what to keep.")
+
+@st.cache_data
+def get_fake() -> list:
+    return make_fake_turns(50)
+
+
+FAKE = get_fake()
+
+
+def fetch_state() -> dict:
+    """Return the /debug/state payload, or fake data. Raises on a real network problem."""
+    if use_fake:
+        n = st.session_state.get("fake_n", 8)
+        if simulate:
+            n = n + 1 if n < len(FAKE) else 8  # add a turn per refresh, loop at the end
+        st.session_state["fake_n"] = n
+        return {"manager_on": True, "turns": FAKE[:n]}
+    r = requests.get(base_url.rstrip("/") + "/debug/state", timeout=2)
+    r.raise_for_status()
+    return r.json()
+
+
+def build_frame(turns: list[dict]) -> pd.DataFrame:
+    df = pd.DataFrame(turns)
+    for col in ("tokens_in", "tokens_sent", "ttft_ms", "manager_on"):
+        if col not in df.columns:
+            df[col] = None
+    for col in ("tokens_in", "tokens_sent", "ttft_ms"):
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = df.set_index("turn")
+    on = df["manager_on"].map(lambda v: True if v is None or v != v else bool(v))
+    out = pd.DataFrame(index=df.index)
+    out["Naive (everything resent)"] = df["tokens_in"]
+    out["Ours (after memory manager)"] = df["tokens_sent"]
+    out["TTFT, manager ON"] = df["ttft_ms"].where(on)
+    out["TTFT, manager OFF (naive)"] = df["ttft_ms"].where(~on)
+    return out
+
+
+def show(state: dict) -> None:
+    turns = state.get("turns", [])
+    if not turns:
+        st.info("No turns yet. Talk to the agent (or send a test request to the proxy) and they appear here.")
+        return
+    frame = build_frame(turns)
+    last = turns[-1]
+    t_in, t_sent = last.get("tokens_in") or 0, last.get("tokens_sent") or 0
+    saved = (1 - t_sent / t_in) * 100 if t_in else 0.0
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Turns so far", len(turns))
+    c2.metric("Tokens, naive", f"{t_in:,}")
+    c3.metric("Tokens, ours", f"{t_sent:,}", f"-{saved:.0f}%" if saved > 0 else None, delta_color="inverse")
+    mode_on = state.get("manager_on", last.get("manager_on", True))
+    c4.metric("Memory manager", "ON" if mode_on else "OFF (naive)")
+
+    left, right = st.columns(2)
+    with left:
+        st.subheader("Tokens sent per turn")
+        st.line_chart(frame[["Naive (everything resent)", "Ours (after memory manager)"]])
+    with right:
+        st.subheader("Time to first token (ms)")
+        ttft = frame[["TTFT, manager ON", "TTFT, manager OFF (naive)"]].dropna(how="all")
+        if ttft.empty:
+            st.caption("No latency recorded yet.")
+        else:
+            st.line_chart(ttft)
+
+    st.subheader("Tier map")
+    with_tiers = [t for t in turns if t.get("tiers")]
+    if not with_tiers:
+        st.info("The proxy is not returning tier info yet (the memory manager has not been plugged in). "
+                "Tick 'Use fake data' in the sidebar to preview this section.")
+        return
+    numbers = [t["turn"] for t in with_tiers]
+    if len(numbers) > 1 and not st.checkbox("Follow the latest turn", value=True, key="follow"):
+        pick = st.select_slider("Turn", options=numbers, value=numbers[-1], key="pick")
+    else:
+        pick = numbers[-1]
+    chosen = next(t for t in with_tiers if t["turn"] == pick)
+    counts = tier_counts(chosen["tiers"])
+    cols = st.columns(len(TIERS))
+    for col, tier in zip(cols, TIERS):
+        col.metric(TIER_MEANING[tier], counts.get(tier, 0))
+    st.markdown(legend_html(), unsafe_allow_html=True)
+    st.markdown(tier_map_html(chosen["tiers"]), unsafe_allow_html=True)
+    st.caption(f"Turn {pick}: one square per message in the original conversation, oldest first. "
+               "Hover a square for its score and token count.")
+
+
+@st.fragment(run_every=refresh if auto else None)
+def live() -> None:
+    try:
+        state = fetch_state()
+    except Exception as e:  # proxy down, wrong URL, etc.
+        st.error(f"Cannot reach the proxy at {base_url}: {e}")
+        st.caption("Start it with: uvicorn main:app --port 8000 (add 'set MOCK_LLM=1' first if you have no key). "
+                   "Or tick 'Use fake data' in the sidebar.")
+        return
+    show(state)
+
+
+live()
