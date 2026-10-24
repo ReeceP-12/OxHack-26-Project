@@ -14,8 +14,8 @@ An error reply (HTTP error, timeout, or an error body such as a Gemini 503)
 counts as a FAILED turn, not a reply: it is logged with failed=1, its user
 message is dropped from the history, and it never counts as a recall answer.
 """
-import argparse, csv, json, time, requests
-from bench.conversation import build_turns, RECALL
+import argparse, csv, json, re, time, requests
+from bench.conversation import build_turns, RECALL, score_reply
 
 def chat(url, model, messages, timeout=60):
     """Returns (reply, latency, prompt_tokens, error). error is None on success."""
@@ -37,9 +37,34 @@ def chat(url, model, messages, timeout=60):
     prompt_tokens = (data.get("usage") or {}).get("prompt_tokens", -1)
     return reply, latency, prompt_tokens, None
 
+# Sent as the first message of EVERY request, in every mode, so the comparison stays fair.
+# Without it the model drifted into a shouting persona when its history was cut down.
+# Pass --system "" to turn it off. Whoever writes manager_build() must keep this message.
+SYSTEM_DEFAULT = ("You are a calm, polite assistant. Answer politely and naturally. "
+                  "Never shout or use capital letters for emphasis.")
+
+def prep(messages, n, system):
+    """Window the history (last_n), then put the system message first when there is one."""
+    msgs = last_n(messages, n)
+    return ([{"role": "system", "content": system}] + msgs) if system else msgs
+
+def is_shouting(reply):
+    """True if a reply looks like the model has drifted into a shouting or theatrical persona:
+    lots of all-caps words, or repeated '?!'. Normal replies use neither."""
+    words = re.findall(r"[A-Za-z']+", reply)
+    caps = [w for w in words if len(w) >= 3 and w.isupper()]
+    return reply.count("?!") >= 2 or (len(words) >= 10 and len(caps) / len(words) > 0.2)
+
 def last_n(messages, n):
-    """The last n messages, or all of them when n is 0."""
-    return messages[-n:] if n else messages
+    """The last n messages (0 = all), but never starting on an assistant reply.
+
+    A conversation that opens with the model's own reply and no question before it is
+    unnatural and can push the model off its normal behaviour, so any leading assistant
+    messages are dropped (a window of 20 therefore becomes 19 messages)."""
+    msgs = messages[-n:] if n else messages
+    while msgs and msgs[0]["role"] != "user":
+        msgs = msgs[1:]
+    return msgs
 
 def main():
     ap = argparse.ArgumentParser()
@@ -48,6 +73,8 @@ def main():
                     help="on = context manager, off = naive")
     ap.add_argument("--label", required=True)
     ap.add_argument("--model", default="gemini-flash")
+    ap.add_argument("--system", default=SYSTEM_DEFAULT,
+                    help='system message sent with every request ("" to disable)')
     ap.add_argument("--window", type=int, default=0,
                     help="send only the last N messages each turn (0 = send everything)")
     a = ap.parse_args()
@@ -57,22 +84,28 @@ def main():
     r = requests.post(a.base + "/debug/mode", json={"manager_on": a.mode == "on"}, timeout=10)
     r.raise_for_status()
     requests.post(a.base + "/debug/reset", timeout=10).raise_for_status()
-    print(f"mode={a.mode}, window={a.window or 'all'}, log reset")
+    print(f"mode={a.mode}, window={a.window or 'all'}, system prompt={'on' if a.system else 'off'}, log reset")
 
-    history, rows, failed_turns = [], [], 0
+    history, rows, failed_turns, shouts = [], [], 0, 0
     for i, text in enumerate(build_turns()):
         history.append({"role": "user", "content": text})
-        reply, lat, ptok, err = chat(url, a.model, last_n(history, a.window))
+        reply, lat, ptok, err = chat(url, a.model, prep(history, a.window, a.system))
         if err:
             history.pop()  # failed turn: drop the user message, keep history consistent
             failed_turns += 1
             print(f"turn {i:2d}  FAILED  {err}")
         else:
             history.append({"role": "assistant", "content": reply})
-            print(f"turn {i:2d}  {lat:5.2f}s  prompt_tokens={ptok}")
-        rows.append({"label": a.label, "mode": a.mode, "window": a.window, "turn": i,
+            if is_shouting(reply):
+                shouts += 1
+            print(f"turn {i:2d}  {lat:5.2f}s  prompt_tokens={ptok}" + ("  SHOUTING" if is_shouting(reply) else ""))
+        rows.append({"label": a.label, "mode": a.mode, "window": a.window, "system": int(bool(a.system)), "turn": i,
                      "latency_s": round(lat, 3), "prompt_tokens": ptok,
                      "failed": int(bool(err))})
+
+    # full transcript of the 50 turns, so drift can be diagnosed afterwards
+    with open(f"bench/transcript_{a.label}.json", "w") as f:
+        json.dump(history, f, indent=2)
 
     # save the tier map / turn records before recall questions add extra turns
     try:
@@ -82,20 +115,28 @@ def main():
     except Exception as e:
         print("could not save /debug/state:", e)
 
-    score, errors = 0, 0
+    score, errors, hedges, answers = 0, 0, 0, []
     for q, kws in RECALL:
-        reply, _, _, err = chat(url, a.model, last_n(history + [{"role": "user", "content": q}], a.window))
+        reply, _, _, err = chat(url, a.model, prep(history + [{"role": "user", "content": q}], a.window, a.system))
         if err:
             errors += 1
             print(f"[ERROR] {q} -> {err}")
             continue
-        ok = any(k in reply.lower() for k in kws)
+        ok, hedged = score_reply(reply, kws)
         score += ok
-        print(f"[{'OK' if ok else 'MISS'}] {q} -> {reply[:80]!r}")
+        hedges += hedged
+        answers.append({"question": q, "correct": bool(ok), "hedged": bool(hedged), "reply": reply})
+        tag = "OK" if ok else ("MISS (hedged: keyword present but reply refused)" if hedged else "MISS")
+        print(f"[{tag}] {q} -> {reply[:80]!r}")
     print(f"\nRECALL {a.label}: {score}/{len(RECALL)}"
-          f"  (failed turns: {failed_turns}, errored recall questions: {errors})")
+          f"  (failed turns: {failed_turns}, errored recall questions: {errors}, hedged replies: {hedges}, shouting replies: {shouts})")
     if failed_turns or errors:
         print("WARNING: this run had errors. Do not use it for the final numbers.")
+    if shouts:
+        print("WARNING: the model drifted into shouting. Read bench/transcript_" + a.label + ".json before trusting this run.")
+
+    with open(f"bench/replies_{a.label}.json", "w") as f:
+        json.dump(answers, f, indent=2)
 
     with open(f"bench/results_{a.label}.csv", "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=rows[0].keys())
