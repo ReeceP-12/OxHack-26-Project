@@ -16,10 +16,15 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
     UPSTREAM_BASE_URL   use any other OpenAI-compatible provider instead, e.g. https://openrouter.ai/api/v1
     UPSTREAM_API_KEY    key for that provider
     REAL_MODELS         comma separated model chain; ElevenLabs' model name is ignored
-    REASONING_EFFORT    Gemini only, default "low"; set to empty to leave it out
+    REASONING_EFFORT    Gemini models, default "low"
+    GEMMA_EFFORT        Gemma models, default "minimal" (the only value that stops its visible thinking)
     HEDGE_DELAY         seconds with no reply before also trying the next model (default 1.5)
     MAX_PARALLEL        most upstream requests in flight per turn (default 2)
     TOTAL_TIMEOUT       give up on a turn after this many seconds (default 7; ElevenLabs quits at ~8)
+    MANAGER             which context manager runs when the switch is ON: "memory" (Teammate A's, memory/),
+                        "standin" (standin/standin.py), or unset = pass-through placeholder. STANDIN=1 still means standin.
+    MEMORY_BUDGET       token budget for A's manager (default 1500)
+    STANDIN_BUDGET      token budget for the stand-in (default 1500)
     CONTEXT_MANAGER     on/off at startup (default on). Flip live with /debug/mode/on|off
     MOCK_LLM            1 = never call a model
     DEBUG_DUMP          1 = save each request to last_request.json for replay.py
@@ -47,15 +52,17 @@ API_KEY = os.environ.get("UPSTREAM_API_KEY", "") if UPSTREAM_BASE else os.enviro
 
 # Models are tried in order. A model may be listed more than once: when an upstream is overloaded,
 # individual requests hang at random, so racing copies of one model helps (see docs/KNOWN_ISSUES.md).
-DEFAULT_CHAIN = "gemini-3.5-flash-lite"
+DEFAULT_CHAIN = "gemma-4-26b-a4b-it"
 MODELS = [m.strip() for m in os.environ.get("REAL_MODELS", DEFAULT_CHAIN).split(",") if m.strip()]
 REASONING_EFFORT = os.environ.get("REASONING_EFFORT", "low")
+GEMMA_EFFORT = os.environ.get("GEMMA_EFFORT", "minimal")
 HEDGE_DELAY = float(os.environ.get("HEDGE_DELAY", "1.5"))
 MAX_PARALLEL = max(1, int(os.environ.get("MAX_PARALLEL", "2")))
 TOTAL_TIMEOUT = float(os.environ.get("TOTAL_TIMEOUT", "7"))
 MOCK_LLM = _flag("MOCK_LLM")
 DEBUG_DUMP = _flag("DEBUG_DUMP")
 BUDGET = 8000  # token budget handed to the context manager
+RETRY_STATUS = (500, 502, 503, 504)  # upstream errors worth one quick retry of the same model
 
 # Only forward fields the upstream endpoint understands (ElevenLabs adds extras).
 FORWARD_FIELDS = ("messages", "temperature", "max_tokens", "tools", "tool_choice", "top_p")
@@ -70,6 +77,8 @@ _turn_counter = 0
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    if _manager_name() == "memory":
+        _memory_cm()  # fail fast and warm up now, not on the first live turn
     # One shared client: connections (and TLS handshakes) are reused across turns.
     app.state.client = httpx.AsyncClient(
         timeout=httpx.Timeout(30, connect=5),
@@ -83,26 +92,81 @@ app = FastAPI(lifespan=lifespan)
 
 
 # ---- context hooks --------------------------------------------------------------------------
+try:  # accurate counts if tiktoken is installed (same counter A's manager uses), else 4 chars per token
+    import tiktoken
+    _ENC = tiktoken.get_encoding("cl100k_base")
+except Exception:
+    _ENC = None
+
+
 def est_tokens(messages: list[dict]) -> int:
-    """Rough token estimate (4 chars per token). Swap for tiktoken if you need accuracy."""
+    """Token estimate: tiktoken when available, otherwise 4 chars per token."""
     total = 0
     for m in messages:
         c = m.get("content") or ""
         if isinstance(c, list):  # content parts
             c = " ".join(p.get("text", "") for p in c if isinstance(p, dict))
-        total += len(c) // 4 + 4
+        total += (len(_ENC.encode(c)) if _ENC else len(c) // 4) + 4
     return total
 
 
-def manager_build(messages: list[dict], budget: int) -> list[dict]:
-    """PLACEHOLDER for ContextManager.build. Teammate A replaces this."""
-    return messages
+def _msg_tokens(m: dict) -> int:
+    return est_tokens([m])
 
 
-def build_context(messages: list[dict], budget: int) -> list[dict]:
+def full_tiers(messages: list[dict]) -> list[dict]:
+    """Tier info when nothing is shrunk: every message is kept in full."""
+    return [{"index": i, "role": m.get("role", ""), "tier": "full", "score": 1.0, "tokens": _msg_tokens(m)}
+            for i, m in enumerate(messages)]
+
+
+_MEMORY_CM = None
+
+
+def _manager_name() -> str:
+    name = os.environ.get("MANAGER", "").strip().lower()
+    if not name and _flag("STANDIN"):
+        name = "standin"
+    return name
+
+
+def _memory_cm():
+    """Teammate A's ContextManager, imported lazily so the proxy still starts without memory/."""
+    global _MEMORY_CM
+    if _MEMORY_CM is None:
+        from memory.context_manager import ContextManager
+        _MEMORY_CM = ContextManager()
+        _MEMORY_CM.build([{"role": "user", "content": "warmup"}], 1500)  # load models before the first real turn
+    return _MEMORY_CM
+
+
+def manager_build(messages: list[dict], budget: int):
+    """Context manager hook. Returns (messages, tiers).
+
+      messages: the reduced OpenAI-style list to send to the model.
+      tiers: one entry per ORIGINAL message (index into the incoming list):
+             {"index": 4, "role": "user", "tier": "full|summary|gist|archived", "score": 0.73, "tokens": 41}
+             "tokens" is the cost of that message as it appears in the sent prompt (0 if archived).
+    Returning just a list is still accepted (everything is then reported as full).
+
+    Choose the manager with MANAGER=memory|standin (unset = pass-through)."""
+    name = _manager_name()
+    if name == "memory":
+        return _memory_cm().build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
+    if name == "standin":
+        from standin.standin import build as standin_build
+        return standin_build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
+    return messages, full_tiers(messages)
+
+
+def build_context(messages: list[dict], budget: int) -> tuple[list[dict], list[dict]]:
     if not STATE["manager_on"]:
-        return messages  # naive baseline: send everything untouched
-    return manager_build(messages, budget)
+        return messages, full_tiers(messages)  # naive baseline: send everything untouched
+    out = manager_build(messages, budget)
+    if isinstance(out, tuple):
+        sent, tiers = out
+        return sent, tiers
+    return out, full_tiers(messages)  # old-style manager that returns a bare list
 
 
 # ---- debug endpoints ------------------------------------------------------------------------
@@ -162,8 +226,12 @@ async def _attempt(client: httpx.AsyncClient, model: str, payload: dict, headers
     or {"ok": False, status, err} on failure. Only raises on cancellation (and cleans up first)."""
     r = None
     try:
-        req = client.build_request("POST", f"{BASE}/chat/completions",
-                                   json={**payload, "model": model}, headers=headers)
+        body = {**payload, "model": model}
+        if model.startswith("gemma"):
+            # Gemma 4 thinks out loud by default (streams <thought>... as reply text, 5 to 14 s of delay).
+            # "minimal" is the only value it accepts that turns that off (none/low/budget return 400).
+            body["reasoning_effort"] = GEMMA_EFFORT
+        req = client.build_request("POST", f"{BASE}/chat/completions", json=body, headers=headers)
         r = await client.send(req, stream=True)
         if r.status_code != 200:
             err = (await r.aread()).decode(errors="replace")
@@ -222,8 +290,8 @@ async def race(client: httpx.AsyncClient, payload: dict, headers: dict, t0: floa
                         await _close(res["r"])
                     continue
                 print(f"   {m} failed: {res['status']} {res['err']}", flush=True)
-                if res["status"] == 503 and m not in retried:
-                    retried.add(m)  # overload spikes often clear fast: retry same model once
+                if res["status"] in RETRY_STATUS and m not in retried:
+                    retried.add(m)  # overload/internal errors often clear fast: retry same model once
                     queue.insert(0, m)
             while winner is None and queue and len(tasks) < MAX_PARALLEL:
                 launch()
@@ -270,7 +338,7 @@ async def _real_stream(client, payload: dict, headers: dict, entry: dict, t0: fl
     finally:
         await _close(winner["r"])
     entry["total_ms"] = round((time.perf_counter() - t0) * 1000)
-    print(entry, flush=True)
+    print({k: v for k, v in entry.items() if k != "tiers"}, flush=True)
 
 
 async def _collect_json(gen, entry: dict, model_hint: str):
@@ -311,7 +379,9 @@ async def chat_completions(request: Request):
     global _turn_counter
     body = await request.json()
     original = body.get("messages", [])
-    messages = build_context(original, budget=BUDGET)
+    t_mgr = time.perf_counter()
+    messages, tiers = build_context(original, budget=BUDGET)
+    manager_ms = round((time.perf_counter() - t_mgr) * 1000, 2)  # what the memory manager itself costs
 
     payload = {k: body[k] for k in FORWARD_FIELDS if k in body}
     payload["messages"] = messages
@@ -334,6 +404,8 @@ async def chat_completions(request: Request):
         "tokens_in": est_tokens(original),
         "tokens_sent": est_tokens(messages),
         "manager_on": STATE["manager_on"],
+        "tiers": tiers,
+        "manager_ms": manager_ms,
         "ttft_ms": None,
         "total_ms": None,
     }

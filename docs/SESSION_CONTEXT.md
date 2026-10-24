@@ -1,90 +1,94 @@
-# Session context: proxy and ElevenLabs wiring (Sat 24 Oct 2026, updated ~17:20)
+# Session context (Sat 24 Oct 2026, updated ~21:35)
 
-**Update 17:20:** the Gemini timeout is understood but not fixed: Google is overloaded or hanging for Reece's key. The proxy now retries, races models and has a `MOCK_LLM=1` mode so everyone can keep working. Context manager on/off switch added. Full details in `docs/KNOWN_ISSUES.md`. Sections below are the 14:20 snapshot where not contradicted.
+Read this alongside `CONTEXT.md` (the idea, architecture, prizes, timeline) and `docs/KNOWN_ISSUES.md` (the model and API problems, with the working recipe). This file is what has happened since CONTEXT.md was written: what is built, what works, what is broken, how it is set up, and what is next. Keep it updated.
 
-Read this alongside `CONTEXT.md` (the idea, architecture, prizes, timeline). This file is only what has happened since: what is built, what works, what is broken, and how it was set up. Keep it updated.
+## How to work with Reece
+Casual and direct. Honest assessments, not reassurance. Never use em dashes in anything written for him. Do not do unsolicited repeated check-ins. He is at OxfordHACK 2026 (ends Sunday 4:30pm, clocks go back overnight).
 
 ## Where we are in the plan
-- Step 0 (verify the ElevenLabs custom LLM hook): **hook works end to end (one real reply seen through ElevenLabs), but Gemini is slow or hangs most of the time. See `docs/KNOWN_ISSUES.md`.**
-- Step 1 (agree interfaces): written down in `docs/TEAMMATE_GUIDE.md`. Needs a quick confirm from the team.
-- Step 2 (naive pass-through proxy): **written and hardened**: 503 retry, model racing, 7 s cap, mock mode, on/off switch. A full reply has been seen through ElevenLabs, but unreliably.
-- Step 3 (`ContextManager.build`): not started. Placeholder `manager_build()` in `main.py` returns the messages unchanged. `build_context()` calls it unless the switch is off.
+- Step 0 (ElevenLabs custom LLM hook): **works end to end.** Replies come back through ElevenLabs Preview with the working setup below.
+- Step 1 (agree interfaces): written in `docs/TEAMMATE_GUIDE.md`. **The tiers shape is still not confirmed with the team.**
+- Step 2 (proxy): **done and hardened.** See "The proxy".
+- Step 3 (real `manager_build`): **not on main.** Still the placeholder that returns the messages unchanged. As of 21:05 there was no `memory/` branch on GitHub from Teammate A.
+- Benchmark (B): in progress on branch `bench`.
+- Dashboard and pitch (C): owner arrived late, nothing visible on GitHub yet.
 
-## What exists in the repo
-- `main.py` (repo root for now, move to `proxy/` when `memory/` lands): FastAPI app.
-  - `POST /v1/chat/completions`: takes OpenAI-style request, calls `build_context()`, streams from Gemini's OpenAI-compatible endpoint, passes chunks straight back.
-  - `GET /debug/state`: list of per-turn records: `turn`, `messages_in`, `messages_sent`, `tokens_in`, `tokens_sent`, `ttft_ms`, `total_ms`.
-  - `GET /`: returns `{"ok": true}`.
-  - Ignores the model name ElevenLabs sends. Real model comes from env var `REAL_MODEL` (default `gemini-3.8-flash`).
-  - Sends `reasoning_effort` (env var `REASONING_EFFORT`, default `low`) to keep time to first token down.
-  - Prints `-> turn N: sending X msgs to MODEL` when a request arrives and `<- first chunk after N ms` when Gemini starts replying. No `<-` line means Gemini never answered.
-  - Token counts are a rough 4-chars-per-token estimate. Swap for tiktoken.
-- `.gitignore` was broken (leading spaces on every line, so nothing was ignored). Rewritten: `.venv/`, `__pycache__/`, `.env`, `*.pyc`.
-- A `.pyc` file was committed by mistake. Fix: `git rm --cached -r __pycache__`.
-- `requirements.txt` is a pip freeze but was missing `httpx` (proxy imports it). Re-freeze after `pip install httpx`.
-- Changes to `main.py` and `.gitignore` may still be uncommitted. Check `git status`.
+## Team and repo state
+- GitHub: `ReeceP-12/OxHack-26-Project`. `main` is Reece's proxy work. Branch `bench` is Teammate B (Xavisanz), last push ~21:30: runner, 50-turn conversation (planted facts, distinct filler, a contradiction, a repeated fact), failed-turn handling, plot script, cumulative chart. B has been merging `main` into `bench`.
+- Teammate A (memory): in progress locally, unconfirmed. Critical path. Plan said v0 end to end by 6pm, so this is behind.
+- Teammate C (dashboard and pitch): can build now against live `/debug/state` (tokens per turn, ttft, model, manager flag). The tier map needs the tiers interface.
+- Reece: proxy, ElevenLabs wiring, integration, unblocking, prize admin.
+- Git notes: `LF will be replaced by CRLF` warnings are harmless. `requirements.txt` shows as modified from line-ending noise. `last_request.json` and `.venv` are git-ignored.
+
+## The proxy (`main.py`)
+FastAPI app. ElevenLabs sends the full message list each turn; the proxy calls `build_context()`, forwards to an OpenAI-compatible model and streams back.
+- `POST /v1/chat/completions`: streams (SSE) when `stream` is true (ElevenLabs). Without `stream` it returns a normal OpenAI JSON reply with `usage.prompt_tokens` (the bench runner uses this).
+- `GET /debug/state`: `{"manager_on": bool, "turns": [...]}`. Each turn: `turn`, `messages_in`, `messages_sent`, `tokens_in`, `tokens_sent`, `manager_on`, `model`, `ttft_ms`, `total_ms`. Token counts are a rough 4-chars-per-token estimate. The log is capped at 5000 turns.
+- Context manager switch: `GET /debug/mode`, `GET /debug/mode/on`, `GET /debug/mode/off`, `POST /debug/mode` with `{"manager_on": false}`. Off means naive pass-through. `POST /debug/reset` clears the log. Startup state from `CONTEXT_MANAGER=on|off`.
+- `build_context()` calls `manager_build(messages, budget)` unless the switch is off. **Teammate A's code goes in `manager_build`.** It currently returns just the message list; the agreed future shape is `(messages, tiers)`.
+- Upstream racing: retries 500, 502, 503 and 504 once on the same model, starts the next copy after `HEDGE_DELAY` of silence, up to `MAX_PARALLEL` in flight, first to deliver a first chunk wins, the rest are cancelled, hard cap `TOTAL_TIMEOUT`. A shared HTTP client reuses connections.
+- Mock mode: `MOCK_LLM=1` never calls a model and returns a canned reply ("Mock reply. I was given N messages and about T tokens of context."). Token counts and context logic still work, so memory, benchmark and dashboard work can proceed. Recall tests and real latency need a real model.
+- Env vars (all optional): `GEMINI_API_KEY`, `UPSTREAM_BASE_URL` and `UPSTREAM_API_KEY` (any OpenAI-compatible provider), `REAL_MODELS` (comma separated chain, default `gemma-4-26b-a4b-it`; ElevenLabs' model name is ignored), `REASONING_EFFORT` (Gemini models, default `low`), `GEMMA_EFFORT` (default `minimal`), `HEDGE_DELAY` (default 1.5), `MAX_PARALLEL` (default 2), `TOTAL_TIMEOUT` (default 7), `CONTEXT_MANAGER`, `MOCK_LLM`, `DEBUG_DUMP` (saves each request to `last_request.json`).
+- Tools in `tools/`: `test_gemini.py` (which models answer and how fast), `probe_thinking.py` (how to switch a model's thinking off), `stream_probe.py` (raw chunk timings of a real request), `soak.py` (success rate over N requests), `replay.py` (replays the last saved request).
+
+## The working API setup (read this first if the model is misbehaving)
+- Gemini 3.x Flash models were overloaded or hung for every key tried, including a teammate's (which also had 403 permission errors on some models). Typical symptoms: `503 UNAVAILABLE ... high demand`, or no first byte for 10 s or more.
+- **`gemma-4-26b-a4b-it` on the same Gemini API key works.** Two catches:
+  1. Gemma 4 thinks out loud by default: it streams `<thought>...` as reply text and takes 5 to 14 s before the answer. `reasoning_effort: "minimal"` is the only value that turns this off (`none`, `low` and `thinking_budget` return 400). The proxy sends it automatically for any model whose name starts with `gemma`.
+  2. Individual requests still hang or return 500 at random, so the proxy races copies.
+- Recommended live settings:
+  ```
+  set REAL_MODELS=gemma-4-26b-a4b-it,gemma-4-26b-a4b-it,gemma-4-26b-a4b-it
+  set MAX_PARALLEL=3
+  set HEDGE_DELAY=1.5
+  uvicorn main:app --port 8000
+  ```
+- Measured with `python tools/soak.py` (15 sequential requests, 6 s window): 15/15 answered, median 3.4 s, slowest 4.7 s (full replies, not first byte). Full ElevenLabs Preview also worked afterwards.
+- **For benchmark runs** use one model copy and no racing so naive and ours are comparable: `set REAL_MODELS=gemma-4-26b-a4b-it`, `set MAX_PARALLEL=1`, `set TOTAL_TIMEOUT=30`.
+- Other providers were tried and blocked from Reece's network: Groq signup refused, Cerebras needs a card, OpenRouter showed "Unable to verify". Any of them works through `UPSTREAM_BASE_URL`, `UPSTREAM_API_KEY` and `REAL_MODELS` if a teammate gets a key from another network.
+- A fully local model (Ollama with Gemma) was discussed and not needed.
 
 ## ElevenLabs setup (agent called "speech engine")
-- Product: **ElevenAgents** (not ElevenCreative).
-- Blank agent, short system prompt, no knowledge base, no RAG. Keeps the benchmark clean: the only difference between naive and ours should be our proxy.
-- Voice mode: **Custom** (not Realtime).
-- LLM: primary row, pick **Custom LLM**. It is at the bottom of the model list.
-  - Endpoint type: **Chat Completions** (not Responses).
-  - Server URL: our ngrok URL ending in `/v1`. ElevenLabs appends `/chat/completions` itself, so do not add it.
-  - Model ID: anything (`gemini-2.5-flash` was typed in). The proxy ignores it.
-  - Secret: a made-up string. The proxy does not check it yet. Should add a check before sharing the URL widely.
-  - Limit token usage: 5000 (suggested in their docs).
-  - Delete the four backup LLMs so a failure is visible and never silently skips our proxy.
-- Click **Publish** (top right) after changes, then use **Preview**. Typing a message in Preview is a quicker test than voice.
-- Their first-turn request was 3 messages and about 695 estimated tokens. So ElevenLabs injects its own system content (~700 tokens baseline). Remember this when reading the benchmark: the naive baseline starts above zero.
+- Product: ElevenAgents. Blank agent, short system prompt, no knowledge base, no RAG, so the only difference between naive and ours is our proxy.
+- Voice mode: Custom. LLM: primary row, pick Custom LLM (bottom of the list). Endpoint type: Chat Completions. Server URL: the ngrok URL ending in `/v1` (ElevenLabs appends `/chat/completions`). Model ID: anything, the proxy ignores it. Secret: a made-up string, **the proxy does not check it yet**. Limit token usage 5000. Backup LLMs deleted so a failure is visible.
+- Click Publish after changes, then use Preview. Typing in Preview is quicker than voice.
+- ElevenLabs gives up on an LLM attempt after roughly 6 to 8 s (the panel showed "8.0 s lost to failed LLM attempts") and retries, so the first byte must arrive inside that.
+- Its first-turn request is 3 messages and about 699 estimated tokens (ElevenLabs injects roughly 700 tokens of system content). It sends `messages`, `model`, `stream`, `stream_options`, `temperature`, `max_tokens` and `tools`. The naive baseline starts above zero.
 
-## ngrok setup
-- ngrok is a command line tool, no app window. Run it from cmd.
-- One-time: install from the Microsoft Store, then `ngrok config add-authtoken <token>` from the dashboard.
-- The free account gives one **static domain**. It does not change on restart, so paste it into ElevenLabs once. The domain belongs to Reece's account. Ask him for it, it is not stored in this repo on purpose (the tunnel has no auth yet).
-- **Run the tunnel against port 8000, not 80.** ngrok's setup page shows `ngrok http 80 ...` and copying that breaks everything with `ERR_NGROK_8012` (502 Bad Gateway). This has happened twice.
-  ```
-  ngrok http 8000 --url https://<static-domain>.ngrok-free.dev
-  ```
-  Check the Forwarding line says `-> http://localhost:8000`.
-- Only one machine can be the live voice endpoint at a time. That is Reece's laptop. Everyone else tests locally.
+## ngrok
+- CLI only, run from cmd. Free account has one static domain that belongs to Reece, so it is not stored in the repo. Run `ngrok http 8000 --url https://<static-domain>.ngrok-free.dev` and check the Forwarding line says `-> http://localhost:8000`. Port 80 (ngrok's default example) gives `ERR_NGROK_8012`.
+- Only Reece's laptop is the live voice endpoint. Everyone else tests locally.
 
-## Problems hit so far, and the fix
+## Problems hit and the fix
 | Symptom | Cause | Fix |
 |---|---|---|
-| Custom LLM not visible on the LLM page | It is inside the model picker, not a separate field | Click the Primary row, scroll to the bottom |
-| ngrok "opens a terminal and nothing happens" | It is a CLI | Run it from cmd |
-| `ModuleNotFoundError: httpx` | Not in requirements | `pip install httpx` |
-| ElevenLabs: `502 ... ERR_NGROK_8012` | ngrok forwarding to port 80 | Restart ngrok with port 8000 |
-| Gemini 404: `gemini-2.5-flash is no longer available to new users` | New keys cannot use it | Use `gemini-3.8-flash` (now the default in `main.py`) |
-| ElevenLabs: `LLM Cascade Error: TimeoutError` | **Open, Google side, see KNOWN_ISSUES.md.** Requests reach the proxy, `ttft_ms` and `total_ms` stay `null`, no `Gemini error` line printed. Gemini accepts the request and does not reply in time | In progress, see below |
+| ElevenLabs `LLM Cascade Error: TimeoutError` | Gemini Flash overloaded or hanging; Gemma thinking out loud | Use Gemma with `minimal` and racing (above) |
+| Gemini 503 `high demand` | Google capacity | Same as above, or another provider |
+| `ModuleNotFoundError: httpx` | Missing from requirements | Added to `requirements.txt` |
+| `ERR_NGROK_8012` / 502 | ngrok on port 80 | Restart ngrok on 8000 |
+| `[Errno 10048] ... only one usage of each socket address` | Old uvicorn still on port 8000 | Ctrl+C in the old terminal, or `netstat -ano \| findstr :8000` then `taskkill /PID <pid> /F` |
+| Bench runner `JSONDecodeError` against the proxy | Proxy only streamed | Proxy now returns JSON when `stream` is not set |
+| `<thought>` text in replies, 5 to 14 s delay | Gemma 4 thinking | `reasoning_effort: "minimal"` for Gemma |
+| `python` runs MSYS2 | PATH order | Use `C:\Users\reece\AppData\Local\Python\bin\python.exe` to make the venv, activate with `.venv\Scripts\activate` |
 
-## Open issue: TimeoutError (Reece owns this)
-Evidence: uvicorn shows `POST /v1/chat/completions 200` (the 200 is sent before Gemini is contacted, so it proves nothing). `/debug/state` shows turns with `ttft_ms: null`. No `Gemini error` line, so Google is not rejecting the call. One earlier turn did get an answer back through ElevenLabs, so the path can work.
-
-Likely cause: a thinking model with slow first token. Already tried: `reasoning_effort` set to `low`. Next checks:
-1. Look at the uvicorn lines `-> turn` and `<- first chunk after N ms`.
-2. Call Gemini directly with curl (outside the proxy) and time it. If it is slow or errors, the model or key is the problem.
-3. If `reasoning_effort` gives a 400, set `REASONING_EFFORT` differently or remove the field.
-4. Try a faster model name via `set REAL_MODEL=<name>` before starting uvicorn.
-5. Fallback: raise ElevenLabs soft timeout, or move to the own voice loop (memory code is identical either way).
-
-## Environment gotchas (from CONTEXT.md, still true)
-- Windows laptop, VS Code terminal defaults to cmd.
-- MSYS2 Python shadows the real one. Real Python: `C:\Users\reece\AppData\Local\Python\bin\python.exe`. Create the venv with that full path, activate with `.venv\Scripts\activate`.
-- The venv is currently using Python 3.14.
-- Gemini API key lives only in an environment variable: `set GEMINI_API_KEY=...`. Never in the repo, never in ElevenLabs. If it was ever pasted somewhere public, rotate it in AI Studio.
-
-## Decisions made this session
+## Decisions made
 - Blank ElevenLabs agent, Custom voice mode, Chat Completions endpoint.
-- Proxy is the single point everything calls. Memory logic plugs in through `build_context()` / `ContextManager.build`.
+- The proxy is the single point everything calls. Memory plugs in through `manager_build()`.
 - Keep the first memory version dumb (embed, score, fill budget greedily). No gist tiers, SQLite archive or tuned weights until it runs end to end.
-- Do a tiny Mem0 comparison early. If we cannot beat it on tokens, lean on latency and the visibility story.
+- A tiny Mem0 comparison early if time; if we cannot beat it on tokens, lean on latency and the visibility story.
+- Defaults stay plain (one model); the flaky-upstream settings are an opt-in recipe, not hard-coded workarounds.
+- Mock mode is a development tool, not a substitute for a working model in the demo.
 
-## Next actions
-1. Reece: fix the timeout, confirm one full reply comes back through ElevenLabs, commit and push.
-2. Reece: add the secret check to the proxy (rejects requests without the ElevenLabs secret).
-3. Teammate A: `memory/` v0 (`ContextManager.build`).
-4. Teammate B: `bench/` 50-turn script and recall questions.
-5. Teammate C: dashboard against a fake `/debug/state` payload.
-6. Whoever has a minute: ask an organiser about the theme and the Citadel "Handmade" category. Install Delta early.
+## Open items and next actions
+1. **Teammate A:** push a rough `memory/` branch now and give an ETA for the real `manager_build()` on main. Offer to split the work (scorer vs tiers plus glue and tests).
+2. **Tiers interface:** confirm in the team chat, then wire it in. Per message: `{"index": 4, "role": "user", "tier": "full|summary|gist|archived", "score": 0.73, "tokens": 41}`. `manager_build` returns `(messages, tiers)`, the proxy stores the tiers on the turn record, naive mode marks everything `full`. A and C both depend on it.
+3. **Secret check on the proxy** (`PROXY_SECRET`, reject on mismatch, open when unset). First log only the incoming header names on one real ElevenLabs request to confirm how the secret arrives, so it does not lock out the agent.
+4. **B:** run the naive baseline now (one model copy, no racing, `TOTAL_TIMEOUT=30`), then "ours" when A lands, then the plot. Recall needs a real model.
+5. **C:** dashboard against live `/debug/state`, tier map when the interface lands, pitch outline.
+6. **Reece, admin:** ask an organiser the theme and what counts as Citadel "Best Handmade Project", install Delta (judging looks at collaboration in it), consider deploying the proxy to Vultr (prize, and it removes the laptop and ngrok single point of failure), record a fallback demo take as soon as it runs cleanly.
+7. **Housekeeping:** swap the 4-chars-per-token estimate for tiktoken if benchmark accuracy needs it. Rotate the Gemini key that was pasted into chat (it sat in a local notes file). Keep the ngrok URL and keys out of the repo and the team chat.
+
+## Environment gotchas
+- Windows laptop, VS Code terminal defaults to cmd. Real Python is `C:\Users\reece\AppData\Local\Python\bin\python.exe`, venv uses 3.14. `set X=...` is cmd syntax; `set X=` with nothing after deletes the variable.
+- Gemini key lives only in an environment variable (`set GEMINI_API_KEY=...`), never in the repo or ElevenLabs.
+- Timeline: feature freeze Sunday 1pm, event ends 4:30pm. Drop list in order: native hot path, Mem0 comparison, Tiger Data, Delta. Never drop the recall test or the dashboard.

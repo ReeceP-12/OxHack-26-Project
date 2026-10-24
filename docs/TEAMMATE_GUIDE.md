@@ -52,10 +52,10 @@ Every turn, ElevenLabs sends the **whole message list** to our proxy. The proxy 
 
 1. **`POST /v1/chat/completions`**: OpenAI chat completions format in, server-sent events stream out. Already written.
 2. **`GET /debug/state`**: returns `{"turns": [...]}`. Each turn today has: `turn`, `messages_in`, `messages_sent`, `tokens_in`, `tokens_sent`, `manager_on`, `model`, `ttft_ms` (time to first token), `total_ms`. `GET /debug/mode/on|off` flips the context manager live for naive-versus-ours runs, and `POST /debug/reset` clears the log.
-   - Proposed addition (agree it together): a `tiers` list per turn, one entry per original message:
+   - Now in the proxy: a `tiers` list per turn, one entry per original message:
      `{"index": 4, "role": "user", "tier": "full|summary|gist|archived", "score": 0.73, "tokens": 41}`
      The dashboard reads this. A fake payload in this shape lets the dashboard be built without waiting for real data.
-3. **`ContextManager.build(messages, budget) -> (messages, tiers)`**: the one function everything calls. `messages` is the OpenAI-style list, `budget` is a token count. Returns the reduced list and the tier info for `/debug/state`. (The placeholder currently returns just the list. Switch to returning both when A lands.)
+3. **`ContextManager.build(messages, budget) -> (messages, tiers)`**: the one function everything calls. `messages` is the OpenAI-style list, `budget` is a token count. Returns the reduced list and the tier info for `/debug/state`. The placeholder in `main.py` already returns `(messages, tiers)` with everything marked `full`. A bare list is still accepted. `tiers` has one entry per ORIGINAL message and `tokens` is its cost in the sent prompt (0 if archived).
 
 ## 4. Who builds what
 
