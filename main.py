@@ -137,7 +137,14 @@ def _memory_cm():
     if _MEMORY_CM is None:
         from memory.context_manager import ContextManager
         _MEMORY_CM = ContextManager()
-        _MEMORY_CM.build([{"role": "user", "content": "warmup"}], 1500)  # load models before the first real turn
+        # Load the model AND run it on realistic message lengths and a few at once, so PyTorch has done its
+        # first-run setup before the first live turn (a one-word warm-up left that cost for turn 1).
+        filler = "Can you tell me something interesting about how this works, and keep it fairly short please? "
+        _MEMORY_CM.build([{"role": "system", "content": "You are a helpful voice assistant. " * 30},
+                          {"role": "user", "content": filler * 2}, {"role": "assistant", "content": "Sure. " + filler * 5},
+                          {"role": "user", "content": filler}, {"role": "assistant", "content": "Of course. " + filler * 3},
+                          {"role": "user", "content": "Thanks, and one more thing about that."}], 1500)
+        _MEMORY_CM.embedder._cache.clear() if hasattr(_MEMORY_CM.embedder, "_cache") else None  # keep warm-up texts out of the cache
     return _MEMORY_CM
 
 
