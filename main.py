@@ -27,9 +27,10 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
                         one is running, and whether the fact classifier loaded.
     MEMORY_BUDGET       base token budget for A's manager (default 1500)
     MEMORY_PIN_CAP      most tokens its pinned-facts lane may add on top of the base (default 500)
-    MEMORY_SCALE        off | sqrt | linear | quad: grow the base budget with the number of prompts (default sqrt,
-                        see memory/budget.py; off = fixed budget). Also MEMORY_SCALE_START/GAIN, MEMORY_BUDGET_MAX,
-                        MEMORY_SCALE_FRAC. The scaled base shows up in /debug/state manager_info.scale
+    MEMORY_SCALE        off | arctan | root | smooth | log | sqrt | linear | quad: grow the base budget with the
+                        number of prompts (code default sqrt; run_arctan.sh uses arctan; off = fixed budget). Also
+                        MEMORY_SCALE_START/GAIN/BEND/ARC/HALF/END/FRAC and MEMORY_BUDGET_MAX, see README.md. The
+                        scaled base shows up in /debug/state manager_info.scale
     STANDIN_BUDGET      base token budget for the stand-in (default 1500)
     STANDIN_PIN_CAP     most tokens its pinned-facts lane may add on top of the base (default 500)
     CONTEXT_MANAGER     on/off at startup (default on). Flip live with /debug/mode/on|off
