@@ -21,8 +21,10 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
     HEDGE_DELAY         seconds with no reply before also trying the next model (default 1.5)
     MAX_PARALLEL        most upstream requests in flight per turn (default 2)
     TOTAL_TIMEOUT       give up on a turn after this many seconds (default 7; ElevenLabs quits at ~8)
-    MANAGER             which context manager runs when the switch is ON: "memory" (Teammate A's, memory/),
-                        "standin" (standin/standin.py), or unset = pass-through placeholder. STANDIN=1 still means standin.
+    MANAGER             which context manager runs when the switch is ON: "memory" (Teammate A's, memory/; the
+                        DEFAULT when unset), "standin" (standin/standin.py; STANDIN=1 still means standin), or
+                        "none" = pass-through (every message reported as full). GET / and /debug/state show which
+                        one is running, and whether the fact classifier loaded.
     MEMORY_BUDGET       base token budget for A's manager (default 1500)
     MEMORY_PIN_CAP      most tokens its pinned-facts lane may add on top of the base (default 500)
     STANDIN_BUDGET      base token budget for the stand-in (default 1500)
@@ -80,7 +82,7 @@ _turn_counter = 0
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     if _manager_name() == "memory":
-        _memory_cm()  # fail fast and warm up now, not on the first live turn
+        _memory_or_none()  # warm up now, not on the first live turn (fails fast if MANAGER=memory was asked for)
     # One shared client: connections (and TLS handshakes) are reused across turns.
     app.state.client = httpx.AsyncClient(
         timeout=httpx.Timeout(30, connect=5),
@@ -125,11 +127,48 @@ def full_tiers(messages: list[dict]) -> list[dict]:
 _MEMORY_CM = None
 
 
+_MEMORY_ERR = None
+
+
 def _manager_name() -> str:
+    """"memory" by default. Pass-through now has to be asked for (MANAGER=none): when it was the default,
+    anyone who forgot MANAGER=memory saw every message marked "full" and nothing shrunk, with no warning."""
     name = os.environ.get("MANAGER", "").strip().lower()
-    if not name and _flag("STANDIN"):
-        name = "standin"
+    if name in ("none", "off", "passthrough", "pass-through"):
+        return ""
+    if not name:
+        name = "standin" if _flag("STANDIN") else "memory"
     return name
+
+
+def _memory_or_none():
+    """The memory manager, or None if it cannot load. A manager the user asked for (MANAGER=memory) fails fast,
+    as before. When it was only the default, a missing dependency falls back to pass-through with a loud
+    warning, so a teammate who has not installed requirements still gets a working proxy and knows why."""
+    global _MEMORY_ERR
+    if _MEMORY_ERR is not None:
+        return None
+    try:
+        return _memory_cm()
+    except Exception as e:
+        if os.environ.get("MANAGER", "").strip():
+            raise
+        _MEMORY_ERR = repr(e)
+        print(f"!! MEMORY MANAGER FAILED TO LOAD: {_MEMORY_ERR}\n"
+              "!! Falling back to pass-through: every message will be sent and reported as 'full'.\n"
+              "!! Fix: pip install -r requirements.txt", flush=True)
+        return None
+
+
+def manager_status() -> dict:
+    """What is actually running. Shown at GET / and in /debug/state so 'everything is full' can be diagnosed."""
+    name = _manager_name() or "none"
+    info = {"name": name, "error": _MEMORY_ERR}
+    if name == "memory" and _MEMORY_CM is not None:
+        clf = getattr(_MEMORY_CM, "fact_clf", None)
+        info["fact_classifier"] = {"loaded": clf is not None, "threshold": getattr(clf, "threshold", None)}
+        info["budget"] = int(os.environ.get("MEMORY_BUDGET", "1500"))
+    return info
 
 
 def _memory_cm():
@@ -158,13 +197,16 @@ def manager_build(messages: list[dict], budget: int):
              "tokens" is the cost of that message as it appears in the sent prompt (0 if archived).
     Returning just a list is still accepted (everything is then reported as full).
 
-    Choose the manager with MANAGER=memory|standin (unset = pass-through)."""
+    Choose the manager with MANAGER=memory|standin|none (unset = memory)."""
     name = _manager_name()
     if name == "memory":
-        out = _memory_cm().build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
-        from memory import tiers as _mtiers
-        STATE["manager_info"] = dict(getattr(_mtiers, "LAST_INFO", {}))  # base/pinned/effective budget for /debug/state
-        return out
+        cm = _memory_or_none()
+        if cm is not None:
+            out = cm.build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
+            from memory import tiers as _mtiers
+            STATE["manager_info"] = dict(getattr(_mtiers, "LAST_INFO", {}))  # base/pinned/effective budget for /debug/state
+            return out
+        return messages, full_tiers(messages)  # memory could not load: warned loudly, see manager_status()
     if name == "standin":
         from standin import standin as _standin
         out = _standin.build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
@@ -186,12 +228,12 @@ def build_context(messages: list[dict], budget: int) -> tuple[list[dict], list[d
 # ---- debug endpoints ------------------------------------------------------------------------
 @app.get("/")
 def root():
-    return {"ok": True, "mock": MOCK_LLM, "manager_on": STATE["manager_on"], "models": MODELS}
+    return {"ok": True, "mock": MOCK_LLM, "manager_on": STATE["manager_on"], "manager": manager_status(), "models": MODELS}
 
 
 @app.get("/debug/state")
 def debug_state():
-    return {"manager_on": STATE["manager_on"], "turns": TURN_LOG}
+    return {"manager_on": STATE["manager_on"], "manager": manager_status(), "turns": TURN_LOG}
 
 
 def _set_mode(on: bool) -> dict:
