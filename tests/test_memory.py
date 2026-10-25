@@ -124,6 +124,37 @@ def test_tier_entries_have_agreed_keys():
         assert t["tier"] in ("full", "summary", "gist", "archived")
 
 
+def test_single_sentence_messages_shrink_to_gist_instead_of_vanishing():
+    """A one-sentence message cannot be summarised shorter, so it used to jump straight to archived."""
+    m = [{"role": "system", "content": "s"}]
+    for i in range(14):
+        m += [{"role": "user", "content": f"Please tell me something interesting about subject number {i} in the world today"},
+              {"role": "assistant", "content": f"Subject {i} has a long and interesting history that people have studied for years"}]
+    m.append({"role": "user", "content": "ok go on"})
+    kept, tiers = ContextManager(FakeEmbedder()).build(m, budget=330)
+    gists = [t for t in tiers if t["tier"] == "gist"]
+    assert gists, [t["tier"] for t in tiers]
+    assert all(t["tokens"] < t["tokens_full"] for t in gists)
+    sent = sum(count_tokens(x["content"]) for x in kept)
+    assert sent <= 330 + 20, sent                       # protected tail may overshoot slightly, as before
+    g = next(x for x in kept if x["content"].endswith("..."))
+    assert len(g["content"].split()) <= 9
+
+
+def test_system_message_is_not_embedded():
+    class Spy(FakeEmbedder):
+        def __init__(self): self.seen = []
+        def embed_many(self, texts):
+            self.seen += list(texts); return super().embed_many(texts)
+    spy = Spy()
+    m = [{"role": "system", "content": "SYSTEM MARKER " * 50}, {"role": "user", "content": "hello there"}]
+    s = score_messages(m, spy)
+    assert not any("SYSTEM MARKER" in t for t in spy.seen)
+    assert len(s) == 2
+    kept, _ = ContextManager(Spy()).build(m, budget=600)
+    assert kept[0]["role"] == "system"
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_"):
