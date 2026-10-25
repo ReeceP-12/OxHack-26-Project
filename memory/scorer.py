@@ -13,6 +13,7 @@ W_SIM, W_REC, W_IMP, W_REF = 0.4, 0.2, 0.3, 0.1
 HALF_LIFE_TURNS = 10      # a message this many turns old has recency 0.5
 REF_THRESHOLD = 0.6       # later message counts as "referring back" above this similarity
 REF_SATURATE = 3          # this many later references = referenced score of 1.0
+PAIR_FACTOR = float(os.environ.get("PAIR_FACTOR", "0.9"))   # a reply scores at least this x its question (0 = off)
 PIN_IMPORTANCE = 0.8      # user messages at least this important are treated as facts to keep
 PIN_FLOOR = 0.7           # ...and never score below this, however off-topic they are now
 
@@ -182,4 +183,12 @@ def score_messages(messages, embedder, fact_clf=None):
         if m.get("role") == "user" and parts["importance"] >= PIN_IMPORTANCE:
             parts["score"] = max(parts["score"], PIN_FLOOR)
         out.append(parts)
+    # Keep question and answer together. Without this, replies (which look less like the current question than
+    # the user's own messages do) are archived while the questions around them stay, and the tier map and the
+    # prompt become a green/grey comb of questions with no answers. A reply inherits most of its question's score,
+    # (a floor on the reply's score, so it ranks just behind its question rather than behind every question).
+    if PAIR_FACTOR > 0:
+        for i in range(1, n):
+            if messages[i].get("role") == "assistant" and messages[i - 1].get("role") == "user":
+                out[i]["score"] = max(out[i]["score"], min(1.0, PAIR_FACTOR * out[i - 1]["score"]))
     return out

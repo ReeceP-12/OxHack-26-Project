@@ -5,3 +5,9 @@ __pycache__/
 last_request.json
 *.bak*
 _to_delete/
+.DS_Store
+bench/state_*.json
+bench/replies_*.json
+bench/results_*.csv
+bench/transcript_*.json
+bench/accuracy_facts.csv

@@ -1,8 +1,10 @@
 """The one function the proxy calls."""
 import os
 
-from memory.scorer import Embedder, score_messages
-from memory.tiers import fill_budget
+from memory import tiers as _tiers
+from memory.scorer import Embedder, score_messages, text_of
+from memory.tiers import fill_budget, count_tokens
+from memory.budget import scaled_budget, scale_settings
 from memory.fact_classifier import FactClassifier
 
 DEFAULT_BUDGET = 1500   # total tokens sent, including ElevenLabs' ~700 token system message
@@ -37,5 +39,15 @@ class ContextManager:
 
     def build(self, messages, budget=DEFAULT_BUDGET):
         """messages: OpenAI-style list. Returns (reduced_messages, tiers)."""
+        # The base budget grows with the length of the chat (see memory/budget.py; MEMORY_SCALE=off keeps it fixed).
+        cfg = scale_settings()
+        n_prompts = sum(1 for m in messages if m.get("role") == "user")
+        effective = budget
+        if cfg["mode"] != "off":
+            naive = sum(count_tokens(text_of(m)) for m in messages)
+            effective = scaled_budget(budget, n_prompts, naive, cfg)
         scores = score_messages(messages, self.embedder, self.fact_clf)
-        return fill_budget(messages, scores, budget, keep_last=self.keep_last)
+        out = fill_budget(messages, scores, effective, keep_last=self.keep_last)
+        _tiers.LAST_INFO["scale"] = {"mode": cfg["mode"], "prompts": n_prompts, "configured_base": budget,
+                                     "scaled_base": effective}
+        return out

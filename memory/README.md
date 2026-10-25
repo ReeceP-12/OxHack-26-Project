@@ -84,3 +84,13 @@ python tools/send_convo.py         # needs the proxy running; ON should go flat,
 - Dropping messages can break strict user/assistant alternation.
 - First request loads MiniLM (warm it up at startup).
 - Weights and the 1500 budget are guesses until the recall benchmark exists.
+
+## Budget that grows with the chat (memory/budget.py)
+
+A fixed budget is shared by more and more messages as a chat lengthens, so old context is squeezed harder
+(`python tools/sim_scaling.py` shows it: at 100 turns a fixed 1500 keeps under half the messages in any form).
+The base budget therefore grows with the number of user prompts:
+`scaled = base + gain * (prompts - START) ** p`, bounded by `min(MEMORY_BUDGET_MAX, 0.5 * naive size)`.
+Default is `sqrt`, starting after 30 prompts, so short calls behave exactly as before. `MEMORY_SCALE=off` restores
+the fixed budget (use it for the headline naive-vs-ours benchmark). Quadratic is available but is not recommended:
+the naive prompt already grows linearly, so an uncapped quadratic budget overtakes it and saves nothing.
