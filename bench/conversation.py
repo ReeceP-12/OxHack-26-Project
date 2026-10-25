@@ -85,3 +85,23 @@ RECALL = [
     ("What's my total trip budget?", ["1200", "1,200"]),
     ("What is my flight number?", ["ba 249", "ba249", "ba-249"]),
 ]
+
+# If a reply contains the right keyword BUT also one of these phrases, it is hedging or
+# refusing (e.g. "I actually don't know! ... BA 249 ...") and does NOT count as correct.
+# Known limit: a correct answer that happens to include one of these phrases fails too.
+# That is the safer error: it never inflates a recall score.
+REFUSAL_PHRASES = [
+    "don't know", "do not know", "dont know",
+    "don't have access", "do not have access", "no way of knowing",
+    "haven't told", "have not told", "haven't mentioned", "have not mentioned",
+    "can't know", "cannot know", "not sure", "no idea",
+    "don't have that", "don't have any", "not able to see", "can't see",
+    "how would i know", "never gave", "never told", "you might be",
+]
+
+def score_reply(reply, keywords):
+    """Returns (correct, hedged). hedged=True means the keyword was present but the reply refused or hedged."""
+    low = reply.lower()
+    has_keyword = any(k in low for k in keywords)
+    hedged = has_keyword and any(p in low for p in REFUSAL_PHRASES)
+    return (has_keyword and not hedged), hedged

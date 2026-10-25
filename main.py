@@ -24,7 +24,8 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
     MANAGER             which context manager runs when the switch is ON: "memory" (Teammate A's, memory/),
                         "standin" (standin/standin.py), or unset = pass-through placeholder. STANDIN=1 still means standin.
     MEMORY_BUDGET       token budget for A's manager (default 1500)
-    STANDIN_BUDGET      token budget for the stand-in (default 1500)
+    STANDIN_BUDGET      base token budget for the stand-in (default 1500)
+    STANDIN_PIN_CAP     most tokens its pinned-facts lane may add on top of the base (default 500)
     CONTEXT_MANAGER     on/off at startup (default on). Flip live with /debug/mode/on|off
     MOCK_LLM            1 = never call a model
     DEBUG_DUMP          1 = save each request to last_request.json for replay.py
@@ -154,8 +155,10 @@ def manager_build(messages: list[dict], budget: int):
     if name == "memory":
         return _memory_cm().build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
     if name == "standin":
-        from standin.standin import build as standin_build
-        return standin_build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
+        from standin import standin as _standin
+        out = _standin.build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
+        STATE["manager_info"] = dict(_standin.LAST_INFO)  # base/pinned/effective budget for /debug/state
+        return out
     return messages, full_tiers(messages)
 
 
@@ -406,6 +409,7 @@ async def chat_completions(request: Request):
         "manager_on": STATE["manager_on"],
         "tiers": tiers,
         "manager_ms": manager_ms,
+        "manager_info": STATE.pop("manager_info", None),  # dynamic budget details, if the manager reports them
         "ttft_ms": None,
         "total_ms": None,
     }

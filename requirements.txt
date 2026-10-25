@@ -41,3 +41,5 @@ uvicorn==0.54.0
 watchdog==6.0.0
 websockets==17.3
 httpx
+sentence-transformers
+tiktoken
