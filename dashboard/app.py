@@ -6,6 +6,8 @@ Run (from the repo root, venv active, proxy running on port 8000):
 No proxy yet? Tick "Use fake data" in the sidebar. "Simulate a live conversation" adds one fake turn
 per refresh so you can rehearse the demo.
 """
+import time
+
 import pandas as pd
 import requests
 import streamlit as st
@@ -14,16 +16,6 @@ from dash_data import (TIER_COLOURS, TIER_MEANING, TIERS, legend_html, make_fake
                   tier_counts, tier_map_html)
 
 st.set_page_config(page_title="Voice memory dashboard", layout="wide")
-
-# Streamlit greys out content while a refresh is running, which flickers on a live dashboard.
-st.markdown(
-    """<style>
-    [data-stale="true"], .stale-element, .element-container[data-stale="true"] {
-        opacity: 1 !important; transition: none !important;
-    }
-    </style>""",
-    unsafe_allow_html=True,
-)
 
 # ---- sidebar --------------------------------------------------------------------------------
 st.sidebar.header("Settings")
@@ -62,7 +54,9 @@ def build_frame(turns: list[dict]) -> pd.DataFrame:
     for col in ("tokens_in", "tokens_sent", "ttft_ms", "manager_on"):
         if col not in df.columns:
             df[col] = None
-    for col in ("tokens_in", "tokens_sent", "ttft_ms"):
+    if "manager_ms" not in df.columns:
+        df["manager_ms"] = None
+    for col in ("tokens_in", "tokens_sent", "ttft_ms", "manager_ms"):
         df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.set_index("turn")
     on = df["manager_on"].map(lambda v: True if v is None or v != v else bool(v))
@@ -71,10 +65,11 @@ def build_frame(turns: list[dict]) -> pd.DataFrame:
     out["Ours (after memory manager)"] = df["tokens_sent"]
     out["TTFT, manager ON"] = df["ttft_ms"].where(on)
     out["TTFT, manager OFF (naive)"] = df["ttft_ms"].where(~on)
+    out["Memory manager cost (ms)"] = df["manager_ms"].where(on)
     return out
 
 
-def show(state: dict) -> None:
+def show(state: dict, follow: bool, pick_turn: int) -> None:
     turns = state.get("turns", [])
     if not turns:
         st.info("No turns yet. Talk to the agent (or send a test request to the proxy) and they appear here.")
@@ -84,12 +79,15 @@ def show(state: dict) -> None:
     t_in, t_sent = last.get("tokens_in") or 0, last.get("tokens_sent") or 0
     saved = (1 - t_sent / t_in) * 100 if t_in else 0.0
 
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3, c4, c5 = st.columns(5)
     c1.metric("Turns so far", len(turns))
     c2.metric("Tokens, naive", f"{t_in:,}")
     c3.metric("Tokens, ours", f"{t_sent:,}", f"-{saved:.0f}%" if saved > 0 else None, delta_color="inverse")
     mode_on = state.get("manager_on", last.get("manager_on", True))
     c4.metric("Memory manager", "ON" if mode_on else "OFF (naive)")
+    cost = frame["Memory manager cost (ms)"].dropna()
+    c5.metric("Manager cost (ms)", f"{cost.iloc[-1]:.0f}" if len(cost) else "n/a",
+              f"median {cost.median():.0f}" if len(cost) else None, delta_color="off")
 
     left, right = st.columns(2)
     with left:
@@ -102,6 +100,9 @@ def show(state: dict) -> None:
             st.caption("No latency recorded yet.")
         else:
             st.line_chart(ttft)
+        if len(cost):
+            st.subheader("What the memory manager costs per turn (ms)")
+            st.line_chart(frame[["Memory manager cost (ms)"]])
 
     st.subheader("Tier map")
     with_tiers = [t for t in turns if t.get("tiers")]
@@ -110,10 +111,7 @@ def show(state: dict) -> None:
                 "Tick 'Use fake data' in the sidebar to preview this section.")
         return
     numbers = [t["turn"] for t in with_tiers]
-    if len(numbers) > 1 and not st.checkbox("Follow the latest turn", value=True, key="follow"):
-        pick = st.select_slider("Turn", options=numbers, value=numbers[-1], key="pick")
-    else:
-        pick = numbers[-1]
+    pick = numbers[-1] if follow or pick_turn not in numbers else pick_turn
     chosen = next(t for t in with_tiers if t["turn"] == pick)
     counts = tier_counts(chosen["tiers"])
     cols = st.columns(len(TIERS))
@@ -125,16 +123,28 @@ def show(state: dict) -> None:
                "Hover a square for its score and token count.")
 
 
-@st.fragment(run_every=refresh if auto else None)
-def live() -> None:
-    try:
-        state = fetch_state()
-    except Exception as e:  # proxy down, wrong URL, etc.
-        st.error(f"Cannot reach the proxy at {base_url}: {e}")
-        st.caption("Start it with: uvicorn main:app --port 8000 (add 'set MOCK_LLM=1' first if you have no key). "
-                   "Or tick 'Use fake data' in the sidebar.")
-        return
-    show(state)
+st.sidebar.divider()
+follow = st.sidebar.checkbox("Tier map follows the latest turn", value=True)
+pick_turn = st.sidebar.number_input("Tier map turn (when not following)", min_value=1, value=1, step=1)
+
+placeholder = st.empty()
 
 
-live()
+def render() -> None:
+    with placeholder.container():
+        try:
+            state = fetch_state()
+        except Exception as e:  # proxy down, wrong URL, etc.
+            st.error(f"Cannot reach the proxy at {base_url}: {e}")
+            st.caption("Start it with: uvicorn main:app --port 8000 (add 'set MOCK_LLM=1' first if you have no key). "
+                       "Or tick 'Use fake data' in the sidebar.")
+            return
+        show(state, follow, int(pick_turn))
+
+
+# Redraw in place inside one long run. (Re-running the whole script every few seconds makes
+# Streamlit grey the page out while it waits, which flickers.) Changing a widget restarts the loop.
+render()
+while auto:
+    time.sleep(refresh)
+    render()
