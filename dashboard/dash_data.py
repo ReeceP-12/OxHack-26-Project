@@ -22,6 +22,8 @@ TIER_MEANING = {
     "gist": "Gist",
     "archived": "Archived (out of prompt)",
 }
+PINNED_RING = "#4da3ff"    # blue outline: a fact the manager pinned
+CRITICAL_RING = "#ff4d6d"  # red outline: a pinned fact marked critical
 SYSTEM_TOKENS = 700  # ElevenLabs injects roughly this much system content every turn
 
 
@@ -55,7 +57,10 @@ def make_fake_turns(n_turns: int = 50, seed: int = 7) -> list[dict]:
             if i > 0:
                 sent_tokens += cost
                 sent_msgs += tier != "archived"
-            tiers.append({"index": i, "role": role, "tier": tier, "score": score, "tokens": tok})
+            pinned = role == "user" and relevance[i] > 0.9
+            tiers.append({"index": i, "role": role, "tier": tier, "score": score, "tokens": tok,
+                          "pinned": pinned, "critical": pinned and i == 5})  # message 5 plays the allergy
+        pinned_tokens = sum(e["tokens"] for e in tiers if e["pinned"])
         tokens_in = sum(base_tokens[:m])
         ttft_ours = 650 + rng.randint(-60, 90)
         ttft_naive = 800 + 14 * k + rng.randint(-60, 90)
@@ -64,6 +69,9 @@ def make_fake_turns(n_turns: int = 50, seed: int = 7) -> list[dict]:
             "tokens_in": tokens_in, "tokens_sent": sent_tokens,
             "manager_on": True, "ttft_ms": ttft_ours, "naive_ttft_ms": ttft_naive,
             "total_ms": ttft_ours + 1400, "model": "fake", "tiers": tiers,
+            "manager_ms": round(12 + 0.15 * m + rng.random() * 6, 2),
+            "manager_info": {"base_budget": 1500, "pinned_tokens": pinned_tokens,
+                             "effective_budget": 1500 + min(500, pinned_tokens), "pin_cap": 500},
         })
     return turns
 
@@ -75,19 +83,33 @@ def tier_counts(tiers: list[dict]) -> dict:
     return counts
 
 
+def pin_counts(tiers: list[dict]) -> tuple[int, int]:
+    """(pinned, critical). A missing flag counts as false."""
+    pinned = sum(1 for e in tiers if e.get("pinned"))
+    critical = sum(1 for e in tiers if e.get("critical"))
+    return pinned, critical
+
+
 def tier_map_html(tiers: list[dict]) -> str:
     """A wrapped row of coloured squares, one per original message. Hover for details."""
     cells = []
     for e in tiers:
         tier = e.get("tier", "full")
         colour = TIER_COLOURS.get(tier, "#444")
+        pinned, critical = bool(e.get("pinned")), bool(e.get("critical"))
+        flags = " | CRITICAL" if critical else (" | pinned" if pinned else "")
         tip = (f"#{e.get('index', '?')} {e.get('role', '')} | {tier} | "
-               f"score {float(e.get('score', 0)):.2f} | {e.get('tokens', 0)} tokens")
-        label = "S" if e.get("role") == "system" else ""
+               f"score {float(e.get('score', 0)):.2f} | {e.get('tokens', 0)} tokens{flags}")
+        if critical:
+            ring, label = f"3px solid {CRITICAL_RING}", "!"
+        elif pinned:
+            ring, label = f"3px solid {PINNED_RING}", "P"
+        else:
+            ring, label = "3px solid transparent", "S" if e.get("role") == "system" else ""
         cells.append(
-            f'<div title="{html.escape(tip)}" style="width:26px;height:26px;border-radius:5px;'
-            f'background:{colour};color:#fff;font:600 11px sans-serif;display:flex;'
-            f'align-items:center;justify-content:center;">{label}</div>'
+            f'<div title="{html.escape(tip)}" style="box-sizing:border-box;width:26px;height:26px;'
+            f'border-radius:5px;background:{colour};border:{ring};color:#fff;font:600 11px sans-serif;'
+            f'display:flex;align-items:center;justify-content:center;">{label}</div>'
         )
     return '<div style="display:flex;flex-wrap:wrap;gap:4px;">' + "".join(cells) + "</div>"
 
@@ -99,5 +121,11 @@ def legend_html() -> str:
             f'<span style="display:inline-flex;align-items:center;margin-right:18px;">'
             f'<span style="width:14px;height:14px;border-radius:3px;background:{TIER_COLOURS[t]};'
             f'display:inline-block;margin-right:6px;"></span>{TIER_MEANING[t]}</span>'
+        )
+    for ring, text in ((PINNED_RING, "Pinned fact"), (CRITICAL_RING, "Critical fact")):
+        items.append(
+            f'<span style="display:inline-flex;align-items:center;margin-right:18px;">'
+            f'<span style="width:14px;height:14px;border-radius:3px;border:3px solid {ring};'
+            f'box-sizing:border-box;display:inline-block;margin-right:6px;"></span>{text}</span>'
         )
     return "<div style='margin:4px 0 10px 0;'>" + "".join(items) + "</div>"

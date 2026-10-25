@@ -13,7 +13,7 @@ import requests
 import streamlit as st
 
 from dash_data import (TIER_COLOURS, TIER_MEANING, TIERS, legend_html, make_fake_turns,
-                  tier_counts, tier_map_html)
+                  tier_counts, tier_map_html, pin_counts)
 
 st.set_page_config(page_title="Voice memory dashboard", layout="wide")
 
@@ -66,7 +66,26 @@ def build_frame(turns: list[dict]) -> pd.DataFrame:
     out["TTFT, manager ON"] = df["ttft_ms"].where(on)
     out["TTFT, manager OFF (naive)"] = df["ttft_ms"].where(~on)
     out["Memory manager cost (ms)"] = df["manager_ms"].where(on)
+    # manager_info is null in naive mode, so a missing value just means "no budget info this turn"
+    info = pd.DataFrame([(t.get("manager_info") or {}) for t in turns], index=df.index)
+    for key, label in (("base_budget", "Base budget"), ("effective_budget", "Effective budget")):
+        out[label] = pd.to_numeric(info[key], errors="coerce") if key in info.columns else float("nan")
     return out
+
+
+def show_budget_chart(budget: pd.DataFrame) -> None:
+    """Step line with a y axis that does not start at zero, so small steps above the base are visible."""
+    try:
+        import altair as alt
+        long = (budget.reset_index().melt("turn", var_name="Line", value_name="Tokens").dropna())
+        chart = (alt.Chart(long).mark_line(interpolate="step-after")
+                 .encode(x=alt.X("turn:Q", title="Turn"),
+                         y=alt.Y("Tokens:Q", scale=alt.Scale(zero=False)),
+                         color=alt.Color("Line:N"),
+                         tooltip=["turn", "Line", "Tokens"]))
+        st.altair_chart(chart)
+    except Exception:
+        st.line_chart(budget)
 
 
 def show(state: dict, follow: bool, pick_turn: int) -> None:
@@ -93,6 +112,11 @@ def show(state: dict, follow: bool, pick_turn: int) -> None:
     with left:
         st.subheader("Tokens sent per turn")
         st.line_chart(frame[["Naive (everything resent)", "Ours (after memory manager)"]])
+        budget = frame[["Base budget", "Effective budget"]].dropna(how="all")
+        if not budget.empty:
+            st.subheader("Token budget per turn")
+            st.caption("Steps up above the base when the manager pins a stated fact.")
+            show_budget_chart(budget)
     with right:
         st.subheader("Time to first token (ms)")
         ttft = frame[["TTFT, manager ON", "TTFT, manager OFF (naive)"]].dropna(how="all")
@@ -114,9 +138,12 @@ def show(state: dict, follow: bool, pick_turn: int) -> None:
     pick = numbers[-1] if follow or pick_turn not in numbers else pick_turn
     chosen = next(t for t in with_tiers if t["turn"] == pick)
     counts = tier_counts(chosen["tiers"])
-    cols = st.columns(len(TIERS))
+    n_pinned, n_critical = pin_counts(chosen["tiers"])
+    cols = st.columns(len(TIERS) + 2)
     for col, tier in zip(cols, TIERS):
         col.metric(TIER_MEANING[tier], counts.get(tier, 0))
+    cols[len(TIERS)].metric("Pinned facts", n_pinned)
+    cols[len(TIERS) + 1].metric("Critical facts", n_critical)
     st.markdown(legend_html(), unsafe_allow_html=True)
     st.markdown(tier_map_html(chosen["tiers"]), unsafe_allow_html=True)
     st.caption(f"Turn {pick}: one square per message in the original conversation, oldest first. "
