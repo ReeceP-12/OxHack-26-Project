@@ -23,7 +23,8 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
     TOTAL_TIMEOUT       give up on a turn after this many seconds (default 7; ElevenLabs quits at ~8)
     MANAGER             which context manager runs when the switch is ON: "memory" (Teammate A's, memory/),
                         "standin" (standin/standin.py), or unset = pass-through placeholder. STANDIN=1 still means standin.
-    MEMORY_BUDGET       token budget for A's manager (default 1500)
+    MEMORY_BUDGET       base token budget for A's manager (default 1500)
+    MEMORY_PIN_CAP      most tokens its pinned-facts lane may add on top of the base (default 500)
     STANDIN_BUDGET      base token budget for the stand-in (default 1500)
     STANDIN_PIN_CAP     most tokens its pinned-facts lane may add on top of the base (default 500)
     CONTEXT_MANAGER     on/off at startup (default on). Flip live with /debug/mode/on|off
@@ -160,7 +161,10 @@ def manager_build(messages: list[dict], budget: int):
     Choose the manager with MANAGER=memory|standin (unset = pass-through)."""
     name = _manager_name()
     if name == "memory":
-        return _memory_cm().build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
+        out = _memory_cm().build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
+        from memory import tiers as _mtiers
+        STATE["manager_info"] = dict(getattr(_mtiers, "LAST_INFO", {}))  # base/pinned/effective budget for /debug/state
+        return out
     if name == "standin":
         from standin import standin as _standin
         out = _standin.build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
