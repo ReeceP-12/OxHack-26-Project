@@ -1,5 +1,6 @@
 """Run with:  python tests/test_fact_classifier.py   (or pytest). No model download needed."""
 import sys, os, tempfile
+os.environ['MEMORY_SCALE'] = 'off'   # these tests assume a fixed base budget
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from test_memory import FakeEmbedder

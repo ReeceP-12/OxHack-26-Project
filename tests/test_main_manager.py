@@ -4,6 +4,7 @@ Regression for "every message is marked full": main.py used to default to PASS-T
 was set, so anyone who forgot the variable saw nothing shrunk and no warning.
 """
 import os, sys, types
+os.environ['MEMORY_SCALE'] = 'off'   # these tests assume a fixed base budget
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "tests"))
 

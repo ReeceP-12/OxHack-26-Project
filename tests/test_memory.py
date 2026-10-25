@@ -2,6 +2,7 @@
 Uses a fake word-overlap embedder so it needs no model download.
 """
 import sys, os, re, zlib
+os.environ['MEMORY_SCALE'] = 'off'   # these tests assume a fixed base budget
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from memory.scorer import score_messages, importance, recency, PIN_IMPORTANCE
