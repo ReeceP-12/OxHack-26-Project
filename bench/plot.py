@@ -16,6 +16,18 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+def dedupe_retries(turns):
+    """A turn the runner retried (refused call or empty reply) leaves extra records in the proxy
+    log. Retries send the same history, so they share `messages_in` with the final, successful
+    attempt. Keep only the LAST record of each run of identical messages_in."""
+    out = []
+    for t in turns:
+        if out and t.get("messages_in") is not None and out[-1].get("messages_in") == t.get("messages_in"):
+            out[-1] = t
+        else:
+            out.append(t)
+    return out
+
 def load(label):
     path = f"bench/state_{label}.json"
     if not os.path.exists(path):
@@ -27,8 +39,9 @@ def load(label):
     # Drop those records: the successful retry is the real turn, and keeping both would
     # count the same turn's tokens twice.
     good = [t for t in turns if t.get("ttft_ms") is not None and t.get("total_ms") is not None]
+    good = dedupe_retries(good)
     if len(good) != len(turns):
-        print(f"{label}: ignored {len(turns) - len(good)} refused/failed call records "
+        print(f"{label}: ignored {len(turns) - len(good)} extra records from retried calls "
               f"({len(good)} turns kept)")
     return good
 

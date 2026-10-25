@@ -34,6 +34,10 @@ def chat(url, model, messages, timeout=60):
         reply = data["choices"][0]["message"]["content"]
     except (ValueError, KeyError, TypeError) as e:
         return None, latency, -1, f"bad response: {e}"
+    if not reply or not reply.strip():
+        # The model returned nothing (seen once in ours2 on the allergy question). That is not
+        # an answer, so it is treated like a refused call and retried, and counted in "retries".
+        return None, latency, -1, "empty reply from the model"
     prompt_tokens = (data.get("usage") or {}).get("prompt_tokens", -1)
     return reply, latency, prompt_tokens, None
 
@@ -150,10 +154,17 @@ def main():
         answers.append({"question": q, "correct": bool(ok), "hedged": bool(hedged), "reply": reply})
         tag = "OK" if ok else ("MISS (hedged: keyword present but reply refused)" if hedged else "MISS")
         print(f"[{tag}] {q} -> {reply[:80]!r}")
+    # state again, now including the 5 recall-question turns (recall_tiers.py reads this)
+    try:
+        state = requests.get(a.base + "/debug/state", timeout=10).json()
+        with open(f"bench/state_{a.label}_recall.json", "w") as f:
+            json.dump(state, f, indent=2)
+    except Exception as e:
+        print("could not save the recall-time state:", e)
     print(f"\nRECALL {a.label}: {score}/{len(RECALL)}"
           f"  (failed turns: {failed_turns}, errored recall questions: {errors}, hedged replies: {hedges}, shouting replies: {shouts}, retries used: {total_retries})")
     if total_retries:
-        print(f"NOTE: {total_retries} calls were retried (Gemini refused them the first time). "
+        print(f"NOTE: {total_retries} calls were retried (refused or empty reply the first time). "
               "Report this number next to the results.")
     if failed_turns or errors:
         print("WARNING: this run had errors. Do not use it for the final numbers.")
