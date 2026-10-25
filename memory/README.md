@@ -25,8 +25,8 @@ kept, tiers = cm.build(messages, budget=1500)
 |---|---|
 | `full` | sent unchanged |
 | `summary` | cut to its first meaningful sentence |
+| `gist` | first 8 words, for a message a summary cannot shrink (one short sentence) |
 | `archived` | not sent this turn (can come back next turn if it scores higher) |
-| `gist` | reserved, not built yet |
 
 `tokens` is what was actually sent (0 if archived). `tokens_full` is the original size.
 
@@ -43,7 +43,7 @@ score = 0.4*similarity + 0.2*recency + 0.3*importance + 0.1*referenced
   even when the conversation moves on (weights alone could not fix this; see the regression test)
 
 Always sent in full: system messages and the last 4 messages. The rest are filled greedily by score:
-full text if it fits, else first-sentence summary, else archived.
+full text if it fits, else first-sentence summary, else a gist (first few words), else archived.
 
 ## Learned fact detector (optional, on top of the regex)
 
