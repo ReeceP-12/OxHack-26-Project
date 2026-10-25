@@ -1,3 +1,5 @@
+> **Archived (hackathon planning notes, partly outdated).** Current docs: `README.md`, `docs/HOW_IT_WORKS.md`, `docs/RESULTS.md`.
+
 # Teammate guide
 
 Read `CONTEXT.md` first (the idea and plan), then this. Goal of this file: you are running and productive within about 20 minutes, and you know exactly what to build.

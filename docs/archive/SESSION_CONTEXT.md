@@ -1,3 +1,5 @@
+> **Archived (hackathon session notes, outdated).** Current docs: `README.md`, `docs/HOW_IT_WORKS.md`, `docs/RESULTS.md`.
+
 # Session context (Sat 24 Oct 2026, updated ~21:35)
 
 Read this alongside `CONTEXT.md` (the idea, architecture, prizes, timeline) and `docs/KNOWN_ISSUES.md` (the model and API problems, with the working recipe). This file is what has happened since CONTEXT.md was written: what is built, what works, what is broken, how it is set up, and what is next. Keep it updated.

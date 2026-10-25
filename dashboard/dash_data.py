@@ -1,7 +1,7 @@
 """Pure helpers for the dashboard: fake data and the tier map HTML. No Streamlit in here,
 so it can be tested on its own.
 
-The tier entry shape is the one proposed in docs/TEAMMATE_GUIDE.md:
+The tier entry shape is the one documented in docs/HOW_IT_WORKS.md:
     {"index": 4, "role": "user", "tier": "full|summary|gist|archived", "score": 0.73, "tokens": 41}
 Each turn in /debug/state may carry them as turn["tiers"].
 """

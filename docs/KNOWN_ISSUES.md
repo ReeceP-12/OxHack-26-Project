@@ -76,6 +76,5 @@ When benchmarking naive against ours, pin one model and one request at a time so
 
 ## 5. Other
 
-- `requirements.txtpip` in the repo is a stray typo file. Delete it.
 - The proxy has no secret check yet. Do not share the ngrok URL widely.
 - Set `DEBUG_DUMP=1` to save each request to `last_request.json` (git-ignored) for `tools/replay.py`. Diagnostic scripts live in `tools/`.

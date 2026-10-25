@@ -203,4 +203,4 @@ python tools/sim_scaling.py --lengths 20 50 100 200 --modes off sqrt linear quad
 # live model recall (proxy running with real models and MEMORY_SCALE=quad):
 python -m bench.accuracy --live --live-trials 10
 ```
-Full list of commands and settings: `README.md`.
+Full list of commands and settings: `README.md`. How the manager works: `docs/HOW_IT_WORKS.md`.
