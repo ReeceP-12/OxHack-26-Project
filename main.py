@@ -27,6 +27,9 @@ Environment variables (all optional except a key unless MOCK_LLM=1):
                         one is running, and whether the fact classifier loaded.
     MEMORY_BUDGET       base token budget for A's manager (default 1500)
     MEMORY_PIN_CAP      most tokens its pinned-facts lane may add on top of the base (default 500)
+    MEMORY_SCALE        off | sqrt | linear | quad: grow the base budget with the number of prompts (default sqrt,
+                        see memory/budget.py; off = fixed budget). Also MEMORY_SCALE_START/GAIN, MEMORY_BUDGET_MAX,
+                        MEMORY_SCALE_FRAC. The scaled base shows up in /debug/state manager_info.scale
     STANDIN_BUDGET      base token budget for the stand-in (default 1500)
     STANDIN_PIN_CAP     most tokens its pinned-facts lane may add on top of the base (default 500)
     CONTEXT_MANAGER     on/off at startup (default on). Flip live with /debug/mode/on|off
@@ -201,12 +204,12 @@ def manager_build(messages: list[dict], budget: int):
     name = _manager_name()
     if name == "memory":
         cm = _memory_or_none()
-        if cm is not None:
-            out = cm.build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
-            from memory import tiers as _mtiers
-            STATE["manager_info"] = dict(getattr(_mtiers, "LAST_INFO", {}))  # base/pinned/effective budget for /debug/state
-            return out
-        return messages, full_tiers(messages)  # memory could not load: warned loudly, see manager_status()
+        if cm is None:
+            return messages, full_tiers(messages)  # memory could not load: warned loudly, see manager_status()
+        out = cm.build(messages, int(os.environ.get("MEMORY_BUDGET", "1500")))
+        from memory import tiers as _mtiers
+        STATE["manager_info"] = dict(getattr(_mtiers, "LAST_INFO", {}))  # base/pinned/effective budget for /debug/state
+        return out
     if name == "standin":
         from standin import standin as _standin
         out = _standin.build(messages, int(os.environ.get("STANDIN_BUDGET", "1500")))
