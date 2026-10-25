@@ -6,6 +6,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 from memory.scorer import score_messages, importance, recency, PIN_IMPORTANCE
 from memory.tiers import fill_budget, count_tokens, first_sentence
+import memory.tiers as T
 from memory.context_manager import ContextManager
 
 
@@ -55,7 +56,9 @@ def test_budget_respected_and_protected_kept():
     assert kept[0]["role"] == "system"
     assert kept[-1]["content"] == m[-1]["content"]        # current question kept
     assert len(tiers) == len(m)
-    assert sum(t["tokens"] for t in tiers) <= 600 + 1
+    info = T.LAST_INFO                                    # dynamic budget: base + the pinned facts lane
+    assert info["pinned_tokens"] <= info["pin_cap"]
+    assert sum(t["tokens"] for t in tiers) <= info["effective_budget"] + 1
     assert sum(1 for t in tiers if t["tier"] == "archived") > 0
 
 
@@ -74,7 +77,8 @@ def test_order_preserved_and_tokens_flat():
         idx = [m.index(x) if x in m else -1 for x in kept]
         assert idx == sorted(idx) or -1 in idx            # summaries have new content; skip those
         sent.append(sum(count_tokens(x["content"]) for x in kept))
-    assert max(sent) <= 700 + 5, sent
+        assert sent[-1] <= T.LAST_INFO["effective_budget"] + 5, (sent, T.LAST_INFO)
+    assert max(sent) <= 700 + T.PIN_CAP + 5, sent          # bounded: never more than base + the pin cap
 
 
 def test_small_conversation_untouched():
@@ -136,7 +140,7 @@ def test_single_sentence_messages_shrink_to_gist_instead_of_vanishing():
     assert gists, [t["tier"] for t in tiers]
     assert all(t["tokens"] < t["tokens_full"] for t in gists)
     sent = sum(count_tokens(x["content"]) for x in kept)
-    assert sent <= 330 + 20, sent                       # protected tail may overshoot slightly, as before
+    assert sent <= T.LAST_INFO["effective_budget"] + 20, sent   # protected tail may overshoot slightly, as before
     g = next(x for x in kept if x["content"].endswith("..."))
     assert len(g["content"].split()) <= 9
 
@@ -201,6 +205,57 @@ def test_regression_allergy_and_pet_survive_without_word_overlap():
     _, tiers = ContextManager(FakeEmbedder()).build(m, budget=1500)
     assert tiers[1]["tier"] in ("full", "summary"), tiers[1]
     assert tiers[3]["tier"] in ("full", "summary"), tiers[3]
+
+def _chat(first_fact, n_filler):
+    m = [{"role": "system", "content": "You are a helpful voice assistant."}]
+    if first_fact:
+        m += [{"role": "user", "content": first_fact}, {"role": "assistant", "content": "Understood, I will keep that in mind."}]
+    for t in range(n_filler):
+        m += [{"role": "user", "content": f"Tell me a long random story about topic number {t} with many words in it please."},
+              {"role": "assistant", "content": "Sure. Here is a long story. " + "Words go here. " * 15}]
+    m.append({"role": "user", "content": "Anything I should remember about my health?"})
+    return m
+
+
+def test_dynamic_budget_steps_up_only_for_a_stated_fact():
+    cm = ContextManager(FakeEmbedder())
+    cm.build(_chat(None, 30), 1500)
+    assert T.LAST_INFO["pinned_tokens"] == 0 and T.LAST_INFO["effective_budget"] == 1500
+    kept, tiers = cm.build(_chat("I have a heart condition, so please avoid anything strenuous.", 30), 1500)
+    i = T.LAST_INFO
+    assert tiers[1]["pinned"] and tiers[1]["critical"], tiers[1]       # found by the critical patterns
+    assert any("heart" in x["content"] for x in kept)                  # survives 30 turns of filler
+    assert 0 < i["pinned_tokens"] <= 60 and i["effective_budget"] == 1500 + i["pinned_tokens"], i
+
+
+def test_pin_lane_is_capped_and_critical_is_never_evicted():
+    nouns = ("river garage ladder violin castle engine pillow quartz meadow harbor lantern marble orchard pepper saddle "
+             "thimble velvet walnut anchor basket cobalt dragon ember falcon glacier hammock island jungle kettle lemon "
+             "magnet nectar oyster pebble quilt rocket spruce tundra umbrella voyage willow yacht zephyr bronze candle "
+             "donkey eagle forest").split()
+    m = [{"role": "system", "content": "s"},
+         {"role": "user", "content": "I have a heart condition, so please avoid anything strenuous."}, {"role": "assistant", "content": "Ok."}]
+    for k, w in enumerate(nouns):
+        m += [{"role": "user", "content": f"My {w} is booked for Friday {k + 1} March at {1000 + k * 37} and it is due then."}, {"role": "assistant", "content": "Noted."}]
+    m.append({"role": "user", "content": "What should I avoid?"})
+    kept, tiers = ContextManager(FakeEmbedder()).build(m, 1500)
+    i = T.LAST_INFO
+    assert i["pinned_tokens"] <= i["pin_cap"] and i["pin_overflow"] > 0 and i["critical_count"] == 1, i
+    assert any("heart" in x["content"] for x in kept), "critical fact was evicted by ordinary ones"
+
+
+def test_updated_fact_replaces_old_but_critical_facts_are_not_merged():
+    m = [{"role": "system", "content": "s"},
+         {"role": "user", "content": "My flight is BA 249 and it leaves at 6:40am."}, {"role": "assistant", "content": "Ok."},
+         {"role": "user", "content": "Update: my flight is now BA 251 and it leaves at 7:10am."}, {"role": "assistant", "content": "Ok."},
+         {"role": "user", "content": "I am allergic to peanuts."}, {"role": "assistant", "content": "Ok."},
+         {"role": "user", "content": "I am allergic to shellfish too."}, {"role": "assistant", "content": "Ok."}]
+    for k in range(6):
+        m += [{"role": "user", "content": f"Filler {k}."}, {"role": "assistant", "content": "Fine."}]
+    kept, tiers = ContextManager(FakeEmbedder()).build(m, 250)
+    txt = " ".join(x["content"] for x in kept)
+    assert "251" in txt and "peanuts" in txt and "shellfish" in txt, txt
+    assert not tiers[1]["pinned"], "the older flight message should have been superseded"
 
 
 if __name__ == "__main__":
