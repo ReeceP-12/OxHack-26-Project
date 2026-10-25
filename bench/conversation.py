@@ -86,6 +86,19 @@ RECALL = [
     ("What is my flight number?", ["ba 249", "ba249", "ba-249"]),
 ]
 
+# Reworded questions: NO words in common with the planted facts, so a manager cannot answer them
+# by matching words alone. Same order and same facts as RECALL (allergy, deadline, dog, budget,
+# flight). Asked only when the runner is started with --paraphrase.
+# Known limit: "pesto pasta" can make a model mention nuts in general, so the allergy keyword is
+# the specific word "peanut" (a generic nut warning does not contain it).
+RECALL_PARAPHRASE = [
+    ("Can I try the pesto pasta tonight?", ["peanut"]),
+    ("When do I need to hand the project in?", ["monday"]),
+    ("What breed is my pet?", ["beagle"]),
+    ("How much can I spend altogether on the trip?", ["1200", "1,200"]),
+    ("What time do I need to be ready to leave for the airport tomorrow?", ["6:40", "6.40"]),
+]
+
 # If a reply contains the right keyword BUT also one of these phrases, it is hedging or
 # refusing (e.g. "I actually don't know! ... BA 249 ...") and does NOT count as correct.
 # Known limit: a correct answer that happens to include one of these phrases fails too.
