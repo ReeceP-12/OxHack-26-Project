@@ -86,11 +86,15 @@ def test_fact_survives_in_a_long_conversation_via_classifier():
         m += [{"role": "user", "content": f"Tell me about topic {i}. " + "Please include plenty of extra detail. " * 8},
               {"role": "assistant", "content": f"Here is a long answer about topic {i}. " + "More detail follows here. " * 10}]
     m.append({"role": "user", "content": "Which animals should I feed tonight?"})
+    # Budget 700, not 1500: with coverage-first tiers a short unpinned fact also survives when there is spare
+    # room, so the classifier only decides the outcome under pressure (live, ElevenLabs' ~700 token system
+    # message eats into the budget, so this is the realistic case).
     cm = ContextManager(FakeEmbedder(), fact_clf=StubClf())
-    _, tiers = cm.build(m, budget=1500)
+    _, tiers = cm.build(m, budget=700)
     assert tiers[1]["tier"] in ("full", "summary"), tiers[1]
-    _, tiers_off = ContextManager(FakeEmbedder(), fact_clf=None).build(m, budget=1500)
+    _, tiers_off = ContextManager(FakeEmbedder(), fact_clf=None).build(m, budget=700)
     assert tiers_off[1]["tier"] == "archived", "control: without the classifier this fact is lost"
+    assert tiers[1]["score"] >= 0.7 > tiers_off[1]["score"], (tiers[1]["score"], tiers_off[1]["score"])
 
 
 def test_auto_mode_ignores_a_classifier_trained_for_another_embedder():

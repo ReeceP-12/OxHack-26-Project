@@ -4,7 +4,7 @@ Uses a fake word-overlap embedder so it needs no model download.
 import sys, os, re, zlib
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
-from memory.scorer import score_messages, importance, recency
+from memory.scorer import score_messages, importance, recency, PIN_IMPORTANCE
 from memory.tiers import fill_budget, count_tokens, first_sentence
 import memory.tiers as T
 from memory.context_manager import ContextManager
@@ -209,6 +209,54 @@ def test_updated_fact_replaces_old_but_critical_facts_are_not_merged():
     txt = " ".join(x["content"] for x in kept)
     assert "251" in txt and "peanuts" in txt and "shellfish" in txt, txt
     assert not tiers[1]["pinned"], "the older flight message should have been superseded"
+
+
+
+STRONG_FACTS = [
+    "I'm severely allergic to peanuts.", "I\u2019m severely allergic to peanuts.", "I have a peanut allergy.",
+    "My son is allergic to eggs.", "I'm vegan.", "I can't eat gluten.", "I'm on insulin for my diabetes.",
+    "My name is Tom.", "Call me Tom", "My wife's name is Anna.", "I have two kids.",
+    "My dog is called Biscuit and he's a three year old beagle.",
+    "I live in Oxford.", "I work as a nurse at the hospital.",
+]
+NOT_FACTS = [
+    "Tell me a story about a dragon.", "Can you recommend a vegan restaurant near me?",
+    "What's the best food for a dog?", "My friend told me a funny story about a cat.",
+    "Is a peanut allergy common?", "I think pizza is great.", "I am so bored.",
+    "Tell me about topic 5.", "How do I train a puppy?", "What does the word allergen mean?",
+    "I have a question about volcanoes.", "I'm going to the shops later.",
+]
+
+
+def test_personal_facts_are_pinned():
+    for t in STRONG_FACTS:
+        assert importance(t) >= PIN_IMPORTANCE, t
+
+
+def test_ordinary_chatter_is_not_pinned():
+    for t in NOT_FACTS:
+        assert importance(t) < PIN_IMPORTANCE, t
+
+
+def test_regression_two_weak_hits_do_not_pin_by_accident():
+    # "am" used to count as a time-of-day word, so any "I am ..." plus one digit was pinned.
+    assert importance("I am bored, tell me about topic 5.") < PIN_IMPORTANCE
+
+
+def test_regression_allergy_and_pet_survive_without_word_overlap():
+    """Teammate B, 24 Oct: allergy/pet were archived and only came back because the question reused their words."""
+    m = [{"role": "system", "content": "You are a helpful voice assistant."},
+         {"role": "user", "content": "I'm severely allergic to peanuts."},
+         {"role": "assistant", "content": "Understood, I will keep that in mind."},
+         {"role": "user", "content": "My dog is called Biscuit and he's a three year old beagle."},
+         {"role": "assistant", "content": "Lovely. Biscuit sounds fun."}]
+    for i in range(40):
+        m += [{"role": "user", "content": f"Tell me about topic {i}. " + "Please include plenty of extra detail. " * 8},
+              {"role": "assistant", "content": f"Here is a long answer about topic {i}. " + "More detail follows here. " * 10}]
+    m.append({"role": "user", "content": "Is this pad thai safe for me, and what should I get my pet?"})
+    _, tiers = ContextManager(FakeEmbedder()).build(m, budget=1500)
+    assert tiers[1]["tier"] in ("full", "summary"), tiers[1]
+    assert tiers[3]["tier"] in ("full", "summary"), tiers[3]
 
 
 if __name__ == "__main__":
