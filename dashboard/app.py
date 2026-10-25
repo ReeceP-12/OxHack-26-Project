@@ -59,6 +59,10 @@ def build_frame(turns: list[dict]) -> pd.DataFrame:
     out = pd.DataFrame(index=df.index)
     out["Naive (everything resent)"] = df["tokens_in"]
     out["Ours (after memory manager)"] = df["tokens_sent"]
+    info = df["manager_info"] if "manager_info" in df.columns else pd.Series([None] * len(df), index=df.index)
+    out["Budget used (effective)"] = pd.to_numeric(info.map(lambda d: d.get("effective_budget") if isinstance(d, dict) else None), errors="coerce")
+    out["Scaled base budget"] = pd.to_numeric(info.map(
+        lambda d: (d.get("scale") or {}).get("scaled_base") if isinstance(d, dict) else None), errors="coerce")
     out["TTFT, manager ON"] = df["ttft_ms"].where(on)
     out["TTFT, manager OFF (naive)"] = df["ttft_ms"].where(~on)
     return out
@@ -73,6 +77,12 @@ def show(state: dict) -> None:
     last = turns[-1]
     t_in, t_sent = last.get("tokens_in") or 0, last.get("tokens_sent") or 0
     saved = (1 - t_sent / t_in) * 100 if t_in else 0.0
+    if last.get("model") == "fake":
+        st.warning("FAKE DATA: every number below, including the ~650 ms latency, is scripted for rehearsal. "
+                   "It is not measured. Untick 'Use fake data' to see the real proxy.")
+    elif last.get("model") == "mock":
+        st.info("MOCK MODEL: latency is not meaningful, and replies are tiny, so the history stays small and the "
+                "budget never binds. Run python tools/demo_long.py for a realistic long chat.")
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Turns so far", len(turns))
@@ -92,6 +102,13 @@ def show(state: dict) -> None:
             st.caption("No latency recorded yet.")
         else:
             st.line_chart(ttft)
+
+    budget = frame[["Scaled base budget", "Budget used (effective)"]].dropna(how="all")
+    if not budget.empty:
+        st.subheader("Memory budget per turn (grows with the conversation)")
+        st.line_chart(budget)
+        st.caption("Scaled base budget = the budget the manager chose for this turn (MEMORY_SCALE). "
+                   "Budget used = that plus room for pinned facts.")
 
     st.subheader("Tier map")
     with_tiers = [t for t in turns if t.get("tiers")]

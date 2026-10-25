@@ -5,9 +5,9 @@ context is squeezed harder and harder. This lets the base budget grow with the n
 never so much that the prompt approaches the naive (send-everything) size, which would throw away the saving.
 
     scaled = base + gain * (prompts - START) ** p        (p = 0.5 sqrt, 1 linear, 2 quadratic)
-    effective = max(base, min(scaled, MAX, FRAC * naive_tokens))
+    effective = base + room * tanh(raw / room),  room = min(MAX, FRAC * naive_tokens) - base
 
-The last term is the guard that matters: a quadratic curve left alone overtakes the naive size (which itself
+The ceiling is the guard that matters (approached smoothly, never hit as a corner): a quadratic curve left alone overtakes the naive size (which itself
 grows linearly), so it is bounded to FRAC of what naive would send.
 
 Environment (all optional):
@@ -17,6 +17,7 @@ Environment (all optional):
     MEMORY_BUDGET_MAX    hard ceiling on the base budget      (default 6000)
     MEMORY_SCALE_FRAC    ceiling as a fraction of naive size  (default 0.5)
 """
+import math
 import os
 
 DEFAULT_MODE = "sqrt"
@@ -49,6 +50,11 @@ def scaled_budget(base, n_prompts, naive_tokens, settings=None):
     if s["mode"] == "off":
         return int(base)
     k = max(0.0, n_prompts - s["start"])
-    scaled = base + s["gain"] * (k ** _POWER[s["mode"]])
+    raw = s["gain"] * (k ** _POWER[s["mode"]])
     ceiling = min(s["max"], s["frac"] * naive_tokens)
-    return int(max(base, min(scaled, ceiling)))
+    room = ceiling - base
+    if room <= 0 or raw <= 0:
+        return int(base)
+    # Soft ceiling: base + room * tanh(raw / room). It follows the chosen curve while raw is small (tanh(x) ~ x)
+    # and bends smoothly towards the ceiling instead of hitting it as a hard corner, so the chart has no kink.
+    return int(base + room * math.tanh(raw / room))

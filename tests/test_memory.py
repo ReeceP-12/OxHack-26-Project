@@ -136,8 +136,13 @@ def test_single_sentence_messages_shrink_to_gist_instead_of_vanishing():
         m += [{"role": "user", "content": f"Please tell me something interesting about subject number {i} in the world today"},
               {"role": "assistant", "content": f"Subject {i} has a long and interesting history that people have studied for years"}]
     m.append({"role": "user", "content": "ok go on"})
-    kept, tiers = ContextManager(FakeEmbedder()).build(m, budget=330)
-    gists = [t for t in tiers if t["tier"] == "gist"]
+    # The exact budget that forces gists depends on the token counter (tiktoken vs the 4-char
+    # fallback), so sweep a range instead of hard-coding one value.
+    for budget in range(150, 700, 20):
+        kept, tiers = ContextManager(FakeEmbedder()).build(m, budget=budget)
+        gists = [t for t in tiers if t["tier"] == "gist"]
+        if gists:
+            break
     assert gists, [t["tier"] for t in tiers]
     assert all(t["tokens"] < t["tokens_full"] for t in gists)
     sent = sum(count_tokens(x["content"]) for x in kept)
