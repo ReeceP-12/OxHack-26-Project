@@ -101,7 +101,13 @@ def score_messages(messages, embedder):
     if n == 0:
         return []
     texts = [text_of(m) for m in messages]
-    embs = embedder.embed_many(texts)                  # (n, 384), already normalised
+    # System messages are always sent in full and nothing scores against them, so skip embedding them
+    # (ElevenLabs' ~700 token system message is the most expensive text to encode).
+    idx = [i for i, m in enumerate(messages) if m.get("role") != "system"]
+    sub = embedder.embed_many([texts[i] for i in idx]) if idx else np.zeros((0, 1), dtype=np.float32)
+    embs = np.zeros((n, sub.shape[1]), dtype=np.float32)   # (n, 384), already normalised; system rows are zero
+    if idx:
+        embs[idx] = sub
     sim = embs @ embs.T                                # cosine similarity of every pair
 
     cur = max((i for i, m in enumerate(messages) if m.get("role") == "user"), default=n - 1)
