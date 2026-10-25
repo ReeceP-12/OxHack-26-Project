@@ -1,4 +1,91 @@
-# OxHack-26-Project: memory for voice agents
+# Deterministic Memory for Voice Agents
+
+> Remember what matters. No language model in the memory loop.
+
+Built at OxfordHACK 2026.
+
+**Demo video:** https://youtu.be/pfISXdMw4ME
+
+## The problem
+
+A voice agent resends the entire conversation to the language model on every turn, because the model has no memory of its own. So the longer you talk, the more tokens each turn costs, and in voice a slow reply is heard as an awkward pause. The usual fix, keeping only the last few messages, forgets important things said early on, like an allergy.
+
+## What it does
+
+This is a proxy that sits between an ElevenLabs voice agent and the language model. On every turn it decides what the model gets to see:
+
+- Every message is scored from 0 to 1 using similarity to the current question, recency, importance and whether later messages refer back to it.
+- Messages are kept in full, shrunk to a one-sentence summary, cut to a short gist, or left out of that turn's prompt.
+- Critical facts (health, allergies, safety) go into a pinned lane on top of the token budget, so they cannot be squeezed out.
+- A live dashboard shows what was kept, shrunk and forgotten, message by message.
+
+There is no language model anywhere in the memory loop. It uses sentence embeddings, pattern matching and one tiny classifier, so it is free, repeatable and runs locally.
+
+In our live voice demo we tell the agent about a heart condition, talk about unrelated things for many turns, then ask what exercise to do. The agent takes the condition into account without being reminded.
+
+## Why it is different
+
+| | Last-N window | LLM memory (e.g. Mem0) | This project |
+|---|---|---|---|
+| Memory step cost | Free | Extra LLM calls | Local maths |
+| Same answer every time | Yes | No | Yes |
+| Keeps critical facts | No | Depends on the summary | Pinned lane |
+| Shows what it dropped | No | Not per message | Live dashboard |
+| Recall on our 50-turn test | 0/5 | Not tested | 5/5 |
+
+These are typical designs, not a benchmark of any named product. Tools like Mem0 are largely about long-term memory across sessions. This project is about keeping one live call small and safe.
+
+## How it works in short
+
+```
+ElevenLabs agent  ->  FastAPI proxy (main.py)  ->  Gemma via the Gemini API
+                          |  memory/  (scorer, tiers, fact classifier, budget)
+                          +-> /debug/state  ->  Streamlit dashboard
+```
+
+1. ElevenLabs sends the full message list to our OpenAI-compatible endpoint.
+2. The memory manager scores every message and packs them into a token budget. Each message gets its smallest form first, so the whole conversation is represented, then the best ones are upgraded to bigger forms with the space left.
+3. Pinned facts live in their own lane on top of the base budget.
+4. The reduced prompt goes to the model, and the reply streams back. Nothing is stored: because the history is resent every turn, a message left out today can return when it becomes relevant again.
+
+Details: [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
+
+## Results
+
+| Measure | Result |
+|---|---|
+| Tokens vs naive | 58% fewer on average over 50 turns (naive 189,739, ours 79,082; ranges do not overlap). On the last turn: 2,227 vs 7,932 tokens |
+| Recall (out of 5) | Ours 5 and naive 5 in every run, and ours also 5 on 5 reworded questions. A last-20-messages window scored 0 |
+| Speed | Mean time to first LLM token 1,815 ms vs 2,310 ms for naive on the 50-turn script (small and suggestive, and it weakened on a longer 107-turn test). Manager cost about 100 ms per turn |
+
+Method: 50-turn scripted conversation with 7 planted facts, 5 recall questions plus 5 reworded ones, 3 runs per mode with min and max reported, base budget 1500, default budget scaling, gemini-3.5-flash-lite. One script and one model. Both naive and ours score 5/5, so this shows no loss of recall, not a gain. The window baseline scores 0 because the facts are planted earlier than its 20-message window. Offline accuracy tests at 50, 100 and 200 prompts are in [`docs/RESULTS.md`](docs/RESULTS.md).
+
+## Honest limits
+
+- Compression can lose detail, so recall is measured, not assumed.
+- The scoring weights are hand set, and the fact detector's training set is small.
+- Most tuning happened near our own test conversation. A held-out conversation is the strongest next test.
+- The matching is English only.
+- The proxy runs on a laptop behind a tunnel for the demo.
+
+## Try it
+
+See the **Quickstart** in the technical reference below (section 2). It runs with canned replies and no API key, or with a Gemini key for real answers, and it starts the live dashboard. For the voice demo, point an ElevenLabs custom LLM agent at the proxy URL ending in `/v1`.
+
+## Team
+
+- Reece Pugh: proxy, ElevenLabs integration, project lead
+- Tom (GitHub: whatsaxis): memory manager and statistics
+- Alex (GitHub: Ulef-maker): dashboard and statistics
+- Xavisanz (GitHub): benchmark and statistics
+
+## Built with
+
+Python, FastAPI, ElevenLabs, Gemma on the Gemini API, sentence-transformers (MiniLM), NumPy, tiktoken, Streamlit.
+
+---
+
+## Technical reference
 
 An ElevenLabs voice agent resends the whole chat every turn, so every reply gets slower and dearer. This proxy sits in
 between and **shrinks the history before it reaches the model**: stated facts (allergies, deadlines, names) are kept,
