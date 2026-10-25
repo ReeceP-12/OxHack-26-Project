@@ -15,6 +15,16 @@ from dash_data import (TIER_COLOURS, TIER_MEANING, TIERS, legend_html, make_fake
 
 st.set_page_config(page_title="Voice memory dashboard", layout="wide")
 
+# Streamlit greys out content while a refresh is running, which flickers on a live dashboard.
+st.markdown(
+    """<style>
+    [data-stale="true"], .stale-element, .element-container[data-stale="true"] {
+        opacity: 1 !important; transition: none !important;
+    }
+    </style>""",
+    unsafe_allow_html=True,
+)
+
 # ---- sidebar --------------------------------------------------------------------------------
 st.sidebar.header("Settings")
 base_url = st.sidebar.text_input("Proxy URL", "http://localhost:8000")
