@@ -45,6 +45,28 @@ score = 0.4*similarity + 0.2*recency + 0.3*importance + 0.1*referenced
 Always sent in full: system messages and the last 4 messages. The rest are filled greedily by score:
 full text if it fits, else first-sentence summary, else archived.
 
+## Learned fact detector (optional, on top of the regex)
+
+Regex misses paraphrases ("peanuts make me ill", "I react badly to shellfish"). A small logistic
+regression on the MiniLM embeddings we already compute flags "the user states a personal fact worth
+keeping" per sentence. It is OR-ed with the regex (never replaces it), only applies to user messages,
+and costs one small matrix product per turn. No LLM call.
+
+```
+python -m memory.train_fact_classifier          # needs the real MiniLM; writes memory/fact_clf.npz (commit it)
+python -m memory.train_fact_classifier --threshold 0.3     # lower = fewer missed facts, more extra pins
+```
+- Data: `memory/fact_data.py`. Train = templates + hand-written; held-out test = hand-written with
+  different phrasing. The training script prints precision/recall for the regex, the classifier at
+  several thresholds, and both combined, and lists every missed fact and false pin. Add examples to
+  `fact_data.py` for anything it gets wrong, then retrain.
+- No `fact_clf.npz`, or one trained for a different embedder: the manager silently uses regex only.
+  `ContextManager(fact_clf=None)` turns it off.
+- Switches for the benchmark (environment variables, set before starting uvicorn):
+  `FACT_CLF=off` regex only | default = classifier OR regex | `FACT_STRONG_REGEX=0` classifier only
+  (the regex can then no longer pin facts) | `FACT_THRESHOLD=0.5` override the saved threshold.
+- Caveat: the data was written by us. Real voice transcripts are messier. Check on the benchmark.
+
 ## Tuning (all constants at the top of `scorer.py`)
 `W_SIM, W_REC, W_IMP, W_REF`, `HALF_LIFE_TURNS`, `REF_THRESHOLD`, `PIN_IMPORTANCE`, `PIN_FLOOR`.
 Budget lives in `context_manager.py` (`DEFAULT_BUDGET`) and in the call from `main.py`.
@@ -52,6 +74,7 @@ Budget lives in `context_manager.py` (`DEFAULT_BUDGET`) and in the call from `ma
 ## Check it
 ```
 python tests/test_memory.py        # no model download needed (uses a fake embedder)
+python tests/test_fact_classifier.py
 python -m memory.try_scorer        # prints a score table with the real MiniLM
 python tools/send_convo.py         # needs the proxy running; ON should go flat, OFF should climb
 ```
