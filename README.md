@@ -52,17 +52,32 @@ Details: [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md).
 
 ## Results
 
+Three separate tests, so the numbers are not interchangeable.
+
+**1. Real conversations (208 English ChatGPT chats, 51+ turns, one critical and one ordinary fact planted in each).**
+
 | Measure | Result |
 |---|---|
-| Tokens vs naive | 58% fewer on average over 50 turns (naive 189,739, ours 79,082; ranges do not overlap). On the last turn: 2,227 vs 7,932 tokens |
-| Recall (out of 5) | Ours 5 and naive 5 in every run, and ours also 5 on 5 reworded questions. A last-20-messages window scored 0 |
-| Speed | Mean time to first LLM token 1,815 ms vs 2,310 ms for naive on the 50-turn script (small and suggestive, and it weakened on a longer 107-turn test). Manager cost about 100 ms per turn |
+| Tokens vs sending everything | 88% fewer on average (95% interval 85% to 90%). Most chats saved 85% or more, a few saved almost nothing |
+| Critical facts kept (allergy, medication) | 97.6%, against 1.9% for a recent-message window at the same token cost (paired test p < 1e-47). About 5 of the 208 chats lost their critical fact |
+| Ordinary facts kept | 77.9%. This is the trade-off: critical facts get the pinned lane, ordinary ones compete for space |
 
-Method: 50-turn scripted conversation with 7 planted facts, 5 recall questions plus 5 reworded ones, 3 runs per mode with min and max reported, base budget 1500, default budget scaling, gemini-3.5-flash-lite. One script and one model. Both naive and ours score 5/5, so this shows no loss of recall, not a gain. The window baseline scores 0 because the facts are planted earlier than its 20-message window. Offline accuracy tests at 50, 100 and 200 prompts are in [`docs/RESULTS.md`](docs/RESULTS.md).
+**2. Live 50-turn test with a real model (3 runs per mode).**
+
+| Measure | Result |
+|---|---|
+| Tokens vs naive | 58% fewer (naive 189,739, ours 79,082; ranges do not overlap). On the last turn: 2,227 vs 7,932 tokens |
+| Recall (out of 5) | Ours 5 and naive 5 in every run, and ours also 5 on 5 reworded questions. A last-20-messages window scored 0 |
+| Speed | Mean time to first LLM token 1,815 ms vs 2,310 ms for naive (small and suggestive, and it weakened on a longer 107-turn test). Manager cost about 100 ms per turn |
+
+Method: 50-turn scripted conversation with 7 planted facts, 5 recall questions plus 5 reworded ones, base budget 1500, default budget scaling, gemini-3.5-flash-lite. One script and one model. Both naive and ours score 5/5, so this shows no loss of recall, not a gain. The window baseline scores 0 because the facts are planted earlier than its 20-message window.
+
+**3. Longer and offline tests.** On a 107-turn conversation of 100 real questions, naive sent about 350,000 tokens in total and ours about 175,000. On synthetic calls of 50, 100 and 200 prompts, the learned fact detector kept 100% of critical facts at 200 prompts against 33% for exact-word rules alone. Full tables are in [`docs/RESULTS.md`](docs/RESULTS.md).
 
 ## Honest limits
 
 - Compression can lose detail, so recall is measured, not assumed.
+- The real-chat test uses typed ChatGPT conversations with facts we planted, not voice calls. About 1 in 40 chats lost its critical fact, and ordinary facts are kept less often (77.9%).
 - The scoring weights are hand set, and the fact detector's training set is small.
 - Most tuning happened near our own test conversation. A held-out conversation is the strongest next test.
 - The matching is English only.
