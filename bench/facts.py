@@ -45,20 +45,24 @@ def main():
 
     print(f"{a.label}: tiers from turn record {last.get('turn')} "
           f"({last['messages_in']} messages in, {last['messages_sent']} sent)\n")
-    print(f"{'planted at':>10}  {'tier':9} {'score':>6} {'tokens':>6}  recalled?  fact")
+    print(f"{'planted at':>10}  {'tier':9} {'score':>6} {'tokens':>6} {'pinned':>6} {'critical':>8}  recalled?  fact")
     for turn, text in sorted(PLANTED.items()):
         try:
             ti = next(i for i, m in enumerate(transcript) if m["role"] == "user" and m["content"] == text) + offset
             entry = tiers[ti]
             tier, score, tok = entry["tier"], entry.get("score"), entry.get("tokens")
+            pin = {True: "yes", False: "no"}.get(entry.get("pinned"), "-")    # v2 only
+            crit = {True: "yes", False: "no"}.get(entry.get("critical"), "-")  # v2 only
         except (StopIteration, IndexError, KeyError):
-            tier, score, tok = "not found", None, None
+            tier, score, tok, pin, crit = "not found", None, None, "-", "-"
         q = RECALL[QUESTION_FOR[turn]][0]
         rec = answers.get(q)
         recalled = "n/a" if rec is None else ("yes" if rec["correct"] else "NO")
         s = f"{score:.2f}" if isinstance(score, (int, float)) else "-"
-        print(f"turn {turn:>5}  {tier:9} {s:>6} {tok if tok is not None else '-':>6}  {recalled:9}  {text[:55]}")
-    print("\nNote: turn 4 (old deadline) is superseded by turn 30, so its tier matters less.")
+        print(f"turn {turn:>5}  {tier:9} {s:>6} {tok if tok is not None else '-':>6} {pin:>6} {crit:>8}  {recalled:9}  {text[:40]}")
+    print("\npinned/critical come from the v2 manager (a '-' means this run did not report them).\n"
+          "'critical' = health/safety keyword match, ranked above ordinary pinned facts.")
+    print("Note: turn 4 (old deadline) is superseded by turn 30, so its tier matters less.")
 
 if __name__ == "__main__":
     main()

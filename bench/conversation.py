@@ -74,6 +74,21 @@ def build_turns():
             c += 1
     return turns
 
+def build_turns_from(path):
+    """Longer conversation: every line of `path` (one real question per line) is filler, and the 7 planted
+    facts are inserted at the SAME turn numbers as in build_turns(). With 100 questions that is 107 turns."""
+    with open(path, encoding="utf-8") as f:
+        filler = [ln.strip() for ln in f if ln.strip()]
+    total = len(filler) + len(PLANTED)
+    turns, c = [], 0
+    for i in range(total):
+        if i in PLANTED:
+            turns.append(PLANTED[i])
+        else:
+            turns.append(filler[c])
+            c += 1
+    return turns
+
 # (question, keywords: ANY of these in the reply counts as correct)
 # Note: keywords are checked against the reply text only. A reply that mentions both the
 # old and the new deadline ("moved from Friday to Monday") still passes on "monday".

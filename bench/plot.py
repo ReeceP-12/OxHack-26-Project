@@ -19,10 +19,12 @@ import matplotlib.pyplot as plt
 def dedupe_retries(turns):
     """A turn the runner retried (refused call or empty reply) leaves extra records in the proxy
     log. Retries send the same history, so they share `messages_in` with the final, successful
-    attempt. Keep only the LAST record of each run of identical messages_in."""
+    attempt. Keep only the LAST record of each run of identical messages_in AND tokens_in
+    (window runs keep messages_in constant, so messages_in alone would merge real turns)."""
     out = []
     for t in turns:
-        if out and t.get("messages_in") is not None and out[-1].get("messages_in") == t.get("messages_in"):
+        if (out and t.get("messages_in") is not None and out[-1].get("messages_in") == t.get("messages_in")
+                and out[-1].get("tokens_in") == t.get("tokens_in")):
             out[-1] = t
         else:
             out.append(t)

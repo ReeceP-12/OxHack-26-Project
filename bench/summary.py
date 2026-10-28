@@ -16,10 +16,12 @@ import argparse, json, os
 def dedupe_retries(turns):
     """A turn the runner retried (refused call or empty reply) leaves extra records in the proxy
     log. Retries send the same history, so they share `messages_in` with the final, successful
-    attempt. Keep only the LAST record of each run of identical messages_in."""
+    attempt. Keep only the LAST record of each run of identical messages_in AND tokens_in
+    (window runs keep messages_in constant, so messages_in alone would merge real turns)."""
     out = []
     for t in turns:
-        if out and t.get("messages_in") is not None and out[-1].get("messages_in") == t.get("messages_in"):
+        if (out and t.get("messages_in") is not None and out[-1].get("messages_in") == t.get("messages_in")
+                and out[-1].get("tokens_in") == t.get("tokens_in")):
             out[-1] = t
         else:
             out.append(t)
@@ -34,17 +36,20 @@ def load_state(label):
 def load_recall(label):
     path = f"bench/replies_{label}.json"
     if not os.path.exists(path):
-        return None, None, 0
+        return None, None, 0, None, 0
     with open(path) as f:
         answers = json.load(f)
-    return sum(1 for r in answers if r["correct"]), len(answers), \
-        sum(1 for r in answers if not r["reply"].strip())
+    orig = [r for r in answers if r.get("set", "original") == "original"]
+    para = [r for r in answers if r.get("set") == "paraphrase"]
+    return (sum(1 for r in orig if r["correct"]), len(orig),
+            sum(1 for r in answers if not r["reply"].strip()),
+            sum(1 for r in para if r["correct"]) if para else None, len(para))
 
 def run_stats(label):
     turns = load_state(label)
     mean = lambda xs: sum(xs) / len(xs) if xs else None
     mgr = [t["manager_ms"] for t in turns if t.get("manager_ms") is not None]
-    correct, answered, empty = load_recall(label)
+    correct, answered, empty, p_correct, p_answered = load_recall(label)
     return {
         "label": label,
         "turns": len(turns),
@@ -55,6 +60,8 @@ def run_stats(label):
         "recall": correct,
         "answered": answered,
         "empty": empty,
+        "para": p_correct,
+        "para_answered": p_answered,
     }
 
 def spread(values, fmt="{:.0f}"):
@@ -74,15 +81,19 @@ def report(name, labels):
     print(f"\n{name}: {len(runs)} runs ({', '.join(r['label'] for r in runs)})")
     if not runs:
         return runs
+    expected = max(set(x["turns"] for x in runs), key=[x["turns"] for x in runs].count)
     for r in runs:
-        flag = "" if r["turns"] == 50 else f"   <-- only {r['turns']} turns recorded"
+        flag = "" if r["turns"] == expected else f"   <-- {r['turns']} turns recorded, expected {expected}"
         if r["empty"]:
             flag += f"   <-- {r['empty']} EMPTY reply (model returned nothing; not counted as forgetting)"
         if r["answered"] is not None and r["answered"] < 5:
             flag += f"   <-- only {r['answered']} recall questions answered"
-        print(f"  {r['label']:10s} recall {r['recall']}/{r['answered']}  tokens {r['tokens_total']}  "
+        para_txt = f"  reworded {r['para']}/{r['para_answered']}" if r["para"] is not None else ""
+        print(f"  {r['label']:10s} recall {r['recall']}/{r['answered']}{para_txt}  tokens {r['tokens_total']}  "
               f"last turn {r['tokens_last']}  ttft mean {r['ttft_mean']:.0f} ms{flag}")
     print("  recall (of 5)      :", spread([r["recall"] for r in runs], "{:.1f}"))
+    if any(r["para"] is not None for r in runs):
+        print("  reworded recall (of 5):", spread([r["para"] for r in runs], "{:.1f}"))
     print("  total tokens sent  :", spread([r["tokens_total"] for r in runs]))
     print("  last-turn tokens   :", spread([r["tokens_last"] for r in runs]))
     print("  ttft mean (ms)     :", spread([r["ttft_mean"] for r in runs]))

@@ -15,7 +15,7 @@ counts as a FAILED turn, not a reply: it is logged with failed=1, its user
 message is dropped from the history, and it never counts as a recall answer.
 """
 import argparse, csv, json, re, time, requests
-from bench.conversation import build_turns, RECALL, score_reply
+from bench.conversation import build_turns, build_turns_from, RECALL, RECALL_PARAPHRASE, score_reply
 
 def chat(url, model, messages, timeout=60):
     """Returns (reply, latency, prompt_tokens, error). error is None on success."""
@@ -96,8 +96,13 @@ def main():
                     help="extra attempts for a call that fails (0 = never retry)")
     ap.add_argument("--retry-wait", type=float, default=8.0,
                     help="seconds to wait before each retry")
+    ap.add_argument("--paraphrase", action="store_true",
+                    help="after the 5 recall questions, also ask 5 reworded questions (RECALL_PARAPHRASE)")
     ap.add_argument("--window", type=int, default=0,
                     help="send only the last N messages each turn (0 = send everything)")
+    ap.add_argument("--questions", default="",
+                    help="text file, one question per line, used as filler instead of the built-in chatter "
+                         "(100 lines + 7 planted facts = 107 turns)")
     a = ap.parse_args()
     url = a.base + "/v1/chat/completions"
 
@@ -108,7 +113,9 @@ def main():
     print(f"mode={a.mode}, window={a.window or 'all'}, system prompt={'on' if a.system else 'off'}, log reset")
 
     history, rows, failed_turns, shouts, total_retries = [], [], 0, 0, 0
-    for i, text in enumerate(build_turns()):
+    turns = build_turns_from(a.questions) if a.questions else build_turns()
+    print(f"{len(turns)} turns" + (f" (filler from {a.questions})" if a.questions else ""))
+    for i, text in enumerate(turns):
         history.append({"role": "user", "content": text})
         reply, lat, ptok, err, used = chat_retry(url, a.model, prep(history, a.window, a.system),
                                                  a.retries, a.retry_wait)
@@ -139,21 +146,34 @@ def main():
         print("could not save /debug/state:", e)
 
     score, errors, hedges, answers = 0, 0, 0, []
-    for q, kws in RECALL:
-        reply, _, _, err, used = chat_retry(url, a.model,
-                                            prep(history + [{"role": "user", "content": q}], a.window, a.system),
-                                            a.retries, a.retry_wait)
-        total_retries += used
-        if err:
-            errors += 1
-            print(f"[ERROR] {q} -> {err}")
-            continue
-        ok, hedged = score_reply(reply, kws)
-        score += ok
-        hedges += hedged
-        answers.append({"question": q, "correct": bool(ok), "hedged": bool(hedged), "reply": reply})
-        tag = "OK" if ok else ("MISS (hedged: keyword present but reply refused)" if hedged else "MISS")
-        print(f"[{tag}] {q} -> {reply[:80]!r}")
+    p_score, p_errors = 0, 0
+    question_sets = [("original", RECALL)]
+    if a.paraphrase:
+        question_sets.append(("paraphrase", RECALL_PARAPHRASE))
+    for qset, questions in question_sets:
+        for q, kws in questions:
+            reply, _, _, err, used = chat_retry(
+                url, a.model,
+                prep(history + [{"role": "user", "content": q}], a.window, a.system),
+                a.retries, a.retry_wait)
+            total_retries += used
+            if err:
+                if qset == "original":
+                    errors += 1
+                else:
+                    p_errors += 1
+                print(f"[ERROR] {q} -> {err}")
+                continue
+            ok, hedged = score_reply(reply, kws)
+            if qset == "original":
+                score += ok
+            else:
+                p_score += ok
+            hedges += hedged
+            answers.append({"set": qset, "question": q, "correct": bool(ok),
+                            "hedged": bool(hedged), "reply": reply})
+            tag = "OK" if ok else ("MISS (hedged: keyword present but reply refused)" if hedged else "MISS")
+            print(f"[{tag}]{' (reworded)' if qset == 'paraphrase' else ''} {q} -> {reply[:80]!r}")
     # state again, now including the 5 recall-question turns (recall_tiers.py reads this)
     try:
         state = requests.get(a.base + "/debug/state", timeout=10).json()
@@ -163,6 +183,8 @@ def main():
         print("could not save the recall-time state:", e)
     print(f"\nRECALL {a.label}: {score}/{len(RECALL)}"
           f"  (failed turns: {failed_turns}, errored recall questions: {errors}, hedged replies: {hedges}, shouting replies: {shouts}, retries used: {total_retries})")
+    if a.paraphrase:
+        print(f"PARAPHRASE {a.label}: {p_score}/{len(RECALL_PARAPHRASE)}  (errored reworded questions: {p_errors})")
     if total_retries:
         print(f"NOTE: {total_retries} calls were retried (refused or empty reply the first time). "
               "Report this number next to the results.")
